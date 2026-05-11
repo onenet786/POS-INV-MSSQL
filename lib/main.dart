@@ -1,0 +1,2700 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart' as intl;
+
+void main() {
+  runApp(const InvProApp());
+}
+
+class InvProApp extends StatefulWidget {
+  const InvProApp({super.key});
+
+  @override
+  State<InvProApp> createState() => _InvProAppState();
+}
+
+class _InvProAppState extends State<InvProApp> {
+  final AppStore store = AppStore.seeded();
+  bool isDark = false;
+  AppUser? currentUser;
+  Timer? syncTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(WindowMode.setCashierTerminalMode(false));
+    syncTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (currentUser != null) unawaited(store.tryReconnectAndSync());
+    });
+  }
+
+  @override
+  void dispose() {
+    syncTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const schemeSeed = Color(0xFF0E7C66);
+    return StoreScope(
+      notifier: store,
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'InvPro Enterprise',
+        themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: schemeSeed),
+          useMaterial3: true,
+          visualDensity: VisualDensity.compact,
+        ),
+        darkTheme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: schemeSeed, brightness: Brightness.dark),
+          useMaterial3: true,
+          visualDensity: VisualDensity.compact,
+        ),
+        home: Directionality(
+          textDirection: TextDirection.ltr,
+          child: currentUser == null
+              ? LoginPage(onLogin: (user) {
+                  unawaited(WindowMode.setCashierTerminalMode(user.isCashier));
+                  setState(() => currentUser = user);
+                })
+              : ShellPage(
+                  user: currentUser!,
+                  isDark: isDark,
+                  onThemeChanged: () => setState(() => isDark = !isDark),
+                  onLogout: () {
+                    unawaited(WindowMode.setCashierTerminalMode(false));
+                    setState(() => currentUser = null);
+                  },
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class WindowMode {
+  static const _channel = MethodChannel('invpro/window');
+
+  static Future<void> setCashierTerminalMode(bool enabled) async {
+    if (!Platform.isWindows) return;
+    try {
+      await _channel.invokeMethod<void>('setCashierTerminalMode', {'enabled': enabled});
+    } catch (_) {
+      // Running tests or unsupported platforms can safely ignore window locking.
+    }
+  }
+}
+
+class StoreScope extends InheritedNotifier<AppStore> {
+  const StoreScope({super.key, required super.notifier, required super.child});
+
+  static AppStore of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<StoreScope>();
+    return scope!.notifier!;
+  }
+}
+
+class ApiClient {
+  ApiClient({this.baseUrl = 'http://localhost:4100/api'});
+
+  final String baseUrl;
+  String? token;
+  final HttpClient _client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+
+  Future<Map<String, dynamic>> login(String email, String password) async {
+    final data = await post('/auth/login', {'email': email, 'password': password}, auth: false);
+    token = data['token']?.toString();
+    return Map<String, dynamic>.from(data['user'] as Map);
+  }
+
+  Future<List<Map<String, dynamic>>> getList(String path) async {
+    final response = await _request('GET', path);
+    if (response is List) return response.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
+    return const [];
+  }
+
+  Future<Map<String, dynamic>> getMap(String path) async {
+    final response = await _request('GET', path);
+    return response is Map ? Map<String, dynamic>.from(response) : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body, {bool auth = true}) async {
+    final response = await _request('POST', path, body: body, auth: auth);
+    return response is Map ? Map<String, dynamic>.from(response) : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> put(String path, Map<String, dynamic> body) async {
+    final response = await _request('PUT', path, body: body);
+    return response is Map ? Map<String, dynamic>.from(response) : <String, dynamic>{};
+  }
+
+  Future<void> delete(String path) async {
+    await _request('DELETE', path);
+  }
+
+  Future<Object?> _request(String method, String path, {Map<String, dynamic>? body, bool auth = true}) async {
+    final request = await _client.openUrl(method, Uri.parse('$baseUrl$path'));
+    request.headers.contentType = ContentType.json;
+    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    if (auth && token != null) request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    if (body != null) request.write(jsonEncode(body));
+    final response = await request.close();
+    final text = await response.transform(utf8.decoder).join();
+    final decoded = text.isEmpty ? null : jsonDecode(text);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final message = decoded is Map ? decoded['message']?.toString() : null;
+      throw HttpException(message ?? 'API request failed (${response.statusCode})', uri: Uri.parse('$baseUrl$path'));
+    }
+    return decoded;
+  }
+}
+
+class AppStore extends ChangeNotifier {
+  AppStore.seeded()
+      : products = [
+          Product(id: 1, name: 'USB-C Charger 25W', sku: 'CHG-25W', barcode: '89010001', salePrice: 2800, purchasePrice: 1900, stock: 42, minStock: 12, category: 'Electronics'),
+          Product(id: 2, name: 'Bluetooth Headset Pro', sku: 'AUD-BT-PRO', barcode: '89010002', salePrice: 5500, purchasePrice: 3900, stock: 18, minStock: 8, category: 'Electronics'),
+          Product(id: 3, name: 'Pain Relief Tablets', sku: 'MED-PRT-20', barcode: '89010003', salePrice: 1200, purchasePrice: 780, stock: 6, minStock: 20, category: 'Pharmacy'),
+          Product(id: 4, name: 'Thermal Receipt Roll', sku: 'POS-ROLL-80', barcode: '89010004', salePrice: 360, purchasePrice: 230, stock: 120, minStock: 30, category: 'POS Supplies'),
+        ],
+        customers = [
+          Party(id: 1, name: 'Walk-in Customer', phone: '-', email: '', balance: 0),
+          Party(id: 2, name: 'Metro Buyer', phone: '+92 300 1112223', email: 'buyer@metro.local', balance: 91000),
+          Party(id: 3, name: 'Pharmacy Branch', phone: '+92 300 3334445', email: 'branch@pharmacy.local', balance: 24000),
+        ],
+        suppliers = [
+          Party(id: 1, name: 'Tech World Supplies', phone: '+92 321 4455667', email: 'sales@techworld.local', balance: 42000),
+          Party(id: 2, name: 'Medline Distribution', phone: '+92 322 8899001', email: 'orders@medline.local', balance: 18500),
+        ],
+        users = [
+          AppUser(id: 1, name: 'System Admin', email: 'admin@invpro.local', role: 'Admin', active: true),
+          AppUser(id: 2, name: 'Store Manager', email: 'manager@invpro.local', role: 'Manager', active: true),
+          AppUser(id: 3, name: 'Front Cashier', email: 'cashier@invpro.local', role: 'Cashier', active: true),
+        ],
+        purchases = [
+          PurchaseOrder(id: 1, supplier: 'Tech World Supplies', orderNo: 'PO-1001', status: 'Pending', total: 156000),
+          PurchaseOrder(id: 2, supplier: 'Medline Distribution', orderNo: 'PO-1002', status: 'Received', total: 84000),
+        ],
+        expenses = [
+          Expense(id: 1, title: 'Shop rent', category: 'Rent', amount: 65000),
+          Expense(id: 2, title: 'Generator fuel', category: 'Utilities', amount: 9800),
+        ],
+        invoices = [
+          Invoice(id: 1, number: 'INV-10490', customer: 'Pharmacy Branch', total: 12626, paid: 9000, method: 'Credit', createdAt: DateTime.now().subtract(const Duration(days: 1))),
+        ],
+        movements = [
+          StockMovement(id: 1, product: 'USB-C Charger 25W', type: 'In', quantity: 30, notes: 'Opening stock'),
+          StockMovement(id: 2, product: 'Pain Relief Tablets', type: 'Out', quantity: 14, notes: 'Sale adjustment'),
+        ] {
+    _loadFromDisk();
+  }
+
+  final List<Product> products;
+  final List<Party> customers;
+  final List<Party> suppliers;
+  final List<AppUser> users;
+  final List<PurchaseOrder> purchases;
+  final List<Expense> expenses;
+  final List<Invoice> invoices;
+  final List<StockMovement> movements;
+  final List<SyncJob> pendingSyncJobs = [];
+
+  int _nextProductId = 10;
+  int _nextPartyId = 10;
+  int _nextUserId = 10;
+  int _nextPurchaseId = 10;
+  int _nextExpenseId = 10;
+  int _nextInvoiceId = 10491;
+  int _nextMovementId = 10;
+  final ApiClient api = ApiClient();
+  bool sqlConnected = false;
+  String syncStatus = 'Local mode';
+  final Map<String, int> roleIds = {};
+  String? lastLoginEmail;
+  String? lastLoginPassword;
+  bool _syncing = false;
+
+  File get _recordsFile {
+    final appData = Platform.environment['APPDATA'];
+    if (appData != null && appData.isNotEmpty) {
+      final directory = Directory('$appData\\InvPro');
+      if (!directory.existsSync()) directory.createSync(recursive: true);
+      return File('${directory.path}\\records.json');
+    }
+    return File('invpro_records.json');
+  }
+
+  @override
+  void notifyListeners() {
+    _saveToDisk();
+    super.notifyListeners();
+  }
+
+  void _loadFromDisk() {
+    final file = _recordsFile;
+    if (!file.existsSync()) return;
+    try {
+      final data = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      products
+        ..clear()
+        ..addAll(_list(data['products']).map(_productFromJson));
+      customers
+        ..clear()
+        ..addAll(_list(data['customers']).map(_partyFromJson));
+      suppliers
+        ..clear()
+        ..addAll(_list(data['suppliers']).map(_partyFromJson));
+      users
+        ..clear()
+        ..addAll(_list(data['users']).map(_userFromJson));
+      purchases
+        ..clear()
+        ..addAll(_list(data['purchases']).map(_purchaseFromJson));
+      expenses
+        ..clear()
+        ..addAll(_list(data['expenses']).map(_expenseFromJson));
+      invoices
+        ..clear()
+        ..addAll(_list(data['invoices']).map(_invoiceFromJson));
+      movements
+        ..clear()
+        ..addAll(_list(data['movements']).map(_movementFromJson));
+      pendingSyncJobs
+        ..clear()
+        ..addAll(_list(data['pendingSyncJobs']).map(SyncJob.fromJson));
+      lastLoginEmail = data['lastLoginEmail']?.toString();
+      lastLoginPassword = data['lastLoginPassword']?.toString();
+      _refreshNextIds();
+    } catch (_) {
+      final backup = File('${file.path}.bad');
+      if (backup.existsSync()) backup.deleteSync();
+      file.renameSync(backup.path);
+    }
+  }
+
+  void _saveToDisk() {
+    final data = {
+      'products': products.map(_productToJson).toList(),
+      'customers': customers.map(_partyToJson).toList(),
+      'suppliers': suppliers.map(_partyToJson).toList(),
+      'users': users.map(_userToJson).toList(),
+      'purchases': purchases.map(_purchaseToJson).toList(),
+      'expenses': expenses.map(_expenseToJson).toList(),
+      'invoices': invoices.map(_invoiceToJson).toList(),
+      'movements': movements.map(_movementToJson).toList(),
+      'pendingSyncJobs': pendingSyncJobs.map((job) => job.toJson()).toList(),
+      'lastLoginEmail': lastLoginEmail,
+      'lastLoginPassword': lastLoginPassword,
+    };
+    _recordsFile.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
+  }
+
+  void _refreshNextIds() {
+    _nextProductId = _nextAfter(products.map((item) => item.id), fallback: 10);
+    _nextPartyId = _nextAfter([...customers.map((item) => item.id), ...suppliers.map((item) => item.id)], fallback: 10);
+    _nextUserId = _nextAfter(users.map((item) => item.id), fallback: 10);
+    _nextPurchaseId = _nextAfter(purchases.map((item) => item.id), fallback: 10);
+    _nextExpenseId = _nextAfter(expenses.map((item) => item.id), fallback: 10);
+    _nextInvoiceId = _nextAfter(invoices.map((item) => item.id), fallback: 10491);
+    _nextMovementId = _nextAfter(movements.map((item) => item.id), fallback: 10);
+  }
+
+  int _nextAfter(Iterable<int> ids, {required int fallback}) {
+    if (ids.isEmpty) return fallback;
+    return ids.reduce((a, b) => a > b ? a : b) + 1;
+  }
+
+  double get todaysSales => invoices.where((invoice) => _sameDate(invoice.createdAt, DateTime.now())).fold(0.0, (sum, invoice) => sum + invoice.total);
+  double get pendingDues => customers.fold(0.0, (sum, party) => sum + party.balance) + invoices.fold(0.0, (sum, invoice) => sum + invoice.due);
+  int get lowStockCount => products.where((product) => product.stock > 0 && product.stock <= product.minStock).length;
+  int get outOfStockCount => products.where((product) => product.stock <= 0).length;
+
+  Future<AppUser?> login(String email, String password) async {
+    lastLoginEmail = email.trim();
+    lastLoginPassword = password;
+    _saveToDisk();
+    try {
+      final apiUser = await api.login(email.trim(), password);
+      sqlConnected = true;
+      syncStatus = 'Connected to SQL Server';
+      final user = AppUser(
+        id: _int(apiUser, 'id'),
+        name: _string(apiUser, 'name'),
+        email: _string(apiUser, 'email'),
+        role: _string(apiUser, 'role', 'Cashier'),
+        active: true,
+      );
+      await _processPendingSyncJobs();
+      await loadSqlData();
+      return user;
+    } catch (error) {
+      sqlConnected = false;
+      syncStatus = 'Local mode: ${_shortError(error)}';
+    }
+
+    final normalizedEmail = email.trim().toLowerCase();
+    final matches = users.where((user) => user.email.toLowerCase() == normalizedEmail && user.active);
+    if (matches.isEmpty) return null;
+    final user = matches.first;
+    return password == user.defaultPassword ? user : null;
+  }
+
+  Future<void> loadSqlData() async {
+    if (!sqlConnected) return;
+    final roles = await api.getList('/users/roles');
+    roleIds
+      ..clear()
+      ..addEntries(roles.map((role) => MapEntry(_string(role, 'Name'), _int(role, 'RoleId'))));
+
+    final apiProducts = await api.getList('/products');
+    products
+      ..clear()
+      ..addAll(apiProducts.map(_apiProductFromJson));
+
+    final apiCustomers = await api.getList('/customers');
+    customers
+      ..clear()
+      ..addAll(apiCustomers.map(_apiCustomerFromJson));
+
+    try {
+      final apiSuppliers = await api.getList('/suppliers');
+      suppliers
+        ..clear()
+        ..addAll(apiSuppliers.map(_apiSupplierFromJson));
+    } catch (_) {}
+
+    try {
+      final apiUsers = await api.getList('/users');
+      users
+        ..clear()
+        ..addAll(apiUsers.map(_apiUserFromJson));
+    } catch (_) {}
+
+    try {
+      final apiInvoices = await api.getList('/invoices');
+      invoices
+        ..clear()
+        ..addAll(apiInvoices.map(_apiInvoiceFromJson));
+    } catch (_) {}
+
+    _refreshNextIds();
+    _saveToDisk();
+    notifyListeners();
+  }
+
+  Future<void> tryReconnectAndSync() async {
+    if (_syncing || pendingSyncJobs.isEmpty && sqlConnected) return;
+    _syncing = true;
+    try {
+      if (!sqlConnected) {
+        final email = lastLoginEmail;
+        final password = lastLoginPassword;
+        if (email == null || password == null) return;
+        await api.login(email, password);
+        sqlConnected = true;
+      }
+      await _processPendingSyncJobs();
+      await loadSqlData();
+    } catch (error) {
+      sqlConnected = false;
+      _setSyncStatus('Waiting to sync ${pendingSyncJobs.length} record(s): ${_shortError(error)}');
+    } finally {
+      _syncing = false;
+    }
+  }
+
+  Future<void> _processPendingSyncJobs() async {
+    if (!sqlConnected || pendingSyncJobs.isEmpty) return;
+    final jobs = List<SyncJob>.of(pendingSyncJobs);
+    var synced = 0;
+    for (final job in jobs) {
+      try {
+        await _runSyncJob(job);
+        pendingSyncJobs.removeWhere((item) => item.id == job.id);
+        synced++;
+        _saveToDisk();
+      } catch (error) {
+        sqlConnected = false;
+        _setSyncStatus('Sync paused after $synced record(s): ${_shortError(error)}');
+        rethrow;
+      }
+    }
+    _setSyncStatus('Synced $synced pending record(s) to SQL Server');
+  }
+
+  Future<void> _runSyncJob(SyncJob job) async {
+    switch (job.type) {
+      case 'product':
+        final product = _productFromJson(job.payload);
+        await _syncProduct(product, isNew: job.action == 'create', queueOnFail: false);
+        break;
+      case 'customer':
+        final party = _partyFromJson(job.payload);
+        await _syncParty(party, isCustomer: true, isNew: job.action == 'create', queueOnFail: false);
+        break;
+      case 'supplier':
+        final party = _partyFromJson(job.payload);
+        await _syncParty(party, isCustomer: false, isNew: job.action == 'create', queueOnFail: false);
+        break;
+      case 'user':
+        final user = _userFromJson(job.payload);
+        await _syncUser(user, isNew: job.action == 'create', queueOnFail: false);
+        break;
+      case 'expense':
+        final expense = _expenseFromJson(job.payload);
+        await _syncExpense(expense, queueOnFail: false);
+        break;
+      case 'invoice':
+        final invoice = _invoiceFromJson(Map<String, dynamic>.from(job.payload['invoice'] as Map));
+        final lines = _list(job.payload['lines']).map(_invoiceLineFromJson).toList();
+        await _syncInvoice(invoice, lines, queueOnFail: false);
+        break;
+      case 'delete':
+        await _deleteSql(_string(job.payload, 'path'), queueOnFail: false);
+        break;
+    }
+  }
+
+  void upsertProduct(Product product) {
+    final index = products.indexWhere((item) => item.id == product.id);
+    final isNew = index == -1;
+    Product savedProduct;
+    final normalizedProduct = _withProductCodes(product, nextId: isNew ? _nextProductId : product.id);
+    if (index == -1) {
+      savedProduct = normalizedProduct.copyWith(id: _nextProductId++);
+      products.add(savedProduct);
+    } else {
+      savedProduct = normalizedProduct;
+      products[index] = savedProduct;
+    }
+    notifyListeners();
+    final job = _job('product', isNew ? 'create' : 'update', savedProduct.id, _productToJson(savedProduct));
+    if (sqlConnected) {
+      unawaited(_syncProduct(savedProduct, isNew: isNew, queueOnFail: true, job: job));
+    } else {
+      _enqueueSyncJob(job);
+    }
+  }
+
+  void deleteProduct(int id) {
+    products.removeWhere((product) => product.id == id);
+    notifyListeners();
+    final job = _job('delete', 'delete', id, {'path': '/products/$id'});
+    if (sqlConnected) {
+      unawaited(_deleteSql('/products/$id', queueOnFail: true, job: job));
+    } else {
+      _enqueueSyncJob(job);
+    }
+  }
+
+  void upsertCustomer(Party party) => _upsertParty(customers, party);
+  void upsertSupplier(Party party) => _upsertParty(suppliers, party);
+
+  void _upsertParty(List<Party> list, Party party) {
+    final index = list.indexWhere((item) => item.id == party.id);
+    if (index == -1) {
+      final savedParty = party.copyWith(id: _nextPartyId++);
+      list.add(savedParty);
+      final isCustomer = identical(list, customers);
+      final job = _job(isCustomer ? 'customer' : 'supplier', 'create', savedParty.id, _partyToJson(savedParty));
+      if (sqlConnected) {
+        unawaited(_syncParty(savedParty, isCustomer: isCustomer, isNew: true, queueOnFail: true, job: job));
+      } else {
+        _enqueueSyncJob(job);
+      }
+    } else {
+      list[index] = party;
+      final isCustomer = identical(list, customers);
+      final job = _job(isCustomer ? 'customer' : 'supplier', 'update', party.id, _partyToJson(party));
+      if (sqlConnected) {
+        unawaited(_syncParty(party, isCustomer: isCustomer, isNew: false, queueOnFail: true, job: job));
+      } else {
+        _enqueueSyncJob(job);
+      }
+    }
+    notifyListeners();
+  }
+
+  void deleteParty(List<Party> list, int id) {
+    list.removeWhere((party) => party.id == id);
+    notifyListeners();
+    final path = '${identical(list, customers) ? '/customers' : '/suppliers'}/$id';
+    final job = _job('delete', 'delete', id, {'path': path});
+    if (sqlConnected) {
+      unawaited(_deleteSql(path, queueOnFail: true, job: job));
+    } else {
+      _enqueueSyncJob(job);
+    }
+  }
+
+  void upsertUser(AppUser user) {
+    final index = users.indexWhere((item) => item.id == user.id);
+    final isNew = index == -1;
+    AppUser savedUser;
+    if (index == -1) {
+      savedUser = user.copyWith(id: _nextUserId++);
+      users.add(savedUser);
+    } else {
+      savedUser = user;
+      users[index] = savedUser;
+    }
+    notifyListeners();
+    final job = _job('user', isNew ? 'create' : 'update', savedUser.id, _userToJson(savedUser));
+    if (sqlConnected) {
+      unawaited(_syncUser(savedUser, isNew: isNew, queueOnFail: true, job: job));
+    } else {
+      _enqueueSyncJob(job);
+    }
+  }
+
+  void deleteUser(int id) {
+    users.removeWhere((user) => user.id == id);
+    notifyListeners();
+    _setSyncStatus('Users are disabled from edit screen; backend has no delete route.');
+  }
+
+  void upsertPurchase(PurchaseOrder order) {
+    final index = purchases.indexWhere((item) => item.id == order.id);
+    if (index == -1) {
+      purchases.add(order.copyWith(id: _nextPurchaseId++));
+    } else {
+      purchases[index] = order;
+    }
+    notifyListeners();
+  }
+
+  void receivePurchase(PurchaseOrder order) {
+    upsertPurchase(order.copyWith(status: 'Received'));
+  }
+
+  Future<int> repairOrphanInvoiceStock() async {
+    if (!sqlConnected) {
+      _setSyncStatus('Connect to SQL before repairing stock');
+      return 0;
+    }
+    try {
+      final result = await api.post('/inventory/repair-orphan-invoice-stock', {});
+      final repaired = _int(result, 'repaired');
+      await loadSqlData();
+      _setSyncStatus('Repaired $repaired orphan invoice stock movement(s)');
+      return repaired;
+    } catch (error) {
+      _setSyncStatus('Stock repair failed: ${_shortError(error)}');
+      return 0;
+    }
+  }
+
+  void upsertExpense(Expense expense) {
+    final index = expenses.indexWhere((item) => item.id == expense.id);
+    if (index == -1) {
+      expenses.add(expense.copyWith(id: _nextExpenseId++));
+    } else {
+      expenses[index] = expense;
+    }
+    notifyListeners();
+    if (index == -1) {
+      final savedExpense = expenses.last;
+      final job = _job('expense', 'create', savedExpense.id, _expenseToJson(savedExpense));
+      if (sqlConnected) {
+        unawaited(_syncExpense(savedExpense, queueOnFail: true, job: job));
+      } else {
+        _enqueueSyncJob(job);
+      }
+    }
+  }
+
+  void addStockMovement(StockMovement movement) {
+    movements.insert(0, movement.copyWith(id: _nextMovementId++));
+    final productIndex = products.indexWhere((product) => product.name == movement.product);
+    if (productIndex != -1) {
+      final product = products[productIndex];
+      final signedQuantity = movement.type == 'Out' ? -movement.quantity : movement.quantity;
+      products[productIndex] = product.copyWith(stock: (product.stock + signedQuantity).clamp(0, 999999).toDouble());
+    }
+    notifyListeners();
+  }
+
+  Invoice postInvoice({required String customer, required List<InvoiceLine> lines, required String method, required double paid}) {
+    final total = lines.fold(0.0, (sum, line) => sum + line.total);
+    final invoice = Invoice(
+      id: _nextInvoiceId,
+      number: 'INV-$_nextInvoiceId',
+      customer: customer,
+      total: total,
+      paid: paid,
+      method: method,
+      createdAt: DateTime.now(),
+    );
+    _nextInvoiceId++;
+    invoices.insert(0, invoice);
+    for (final line in lines) {
+      final index = products.indexWhere((product) => product.id == line.product.id);
+      if (index != -1) {
+        final product = products[index];
+        products[index] = product.copyWith(stock: (product.stock - line.quantity).clamp(0, 999999).toDouble());
+      }
+    }
+    final customerIndex = customers.indexWhere((party) => party.name == customer);
+    if (customerIndex != -1 && invoice.due > 0) {
+      final party = customers[customerIndex];
+      customers[customerIndex] = party.copyWith(balance: party.balance + invoice.due);
+    }
+    notifyListeners();
+    final job = _job('invoice', 'create', invoice.id, {
+      'invoice': _invoiceToJson(invoice),
+      'lines': lines.map(_invoiceLineToJson).toList(),
+    });
+    if (sqlConnected) {
+      unawaited(_syncInvoice(invoice, lines, queueOnFail: true, job: job));
+    } else {
+      _enqueueSyncJob(job);
+    }
+    return invoice;
+  }
+
+  Future<void> _syncProduct(Product product, {required bool isNew, bool queueOnFail = false, SyncJob? job}) async {
+    try {
+      final body = {
+        'name': product.name,
+        'unitId': 1,
+        'sku': product.sku,
+        'barcode': product.barcode,
+        'salePrice': product.salePrice,
+        'purchasePrice': product.purchasePrice,
+        'stockQuantity': product.stock,
+        'taxRate': 0,
+        'minStockLevel': product.minStock,
+        'hasExpiry': false,
+        'trackSerial': false,
+        'isActive': true,
+      };
+      final row = isNew ? await api.post('/products', body) : await api.put('/products/${product.id}', body);
+      _replaceProductId(product.id, _int(row, 'ProductId', product.id));
+      _setSyncStatus('Saved product to SQL Server');
+    } catch (error) {
+      if (queueOnFail && job != null) _enqueueSyncJob(job);
+      _setSyncStatus('SQL product save failed: ${_shortError(error)}');
+      if (!queueOnFail) rethrow;
+    }
+  }
+
+  Future<void> _syncParty(Party party, {required bool isCustomer, required bool isNew, bool queueOnFail = false, SyncJob? job}) async {
+    try {
+      final path = isCustomer ? '/customers' : '/suppliers';
+      final body = isCustomer
+          ? {'name': party.name, 'phone': _nullable(party.phone), 'email': _nullable(party.email), 'creditLimit': party.balance}
+          : {'name': party.name, 'phone': _nullable(party.phone), 'email': _nullable(party.email), 'taxNumber': null};
+      final row = isNew ? await api.post(path, body) : await api.put('$path/${party.id}', body);
+      final nextId = _int(row, isCustomer ? 'CustomerId' : 'SupplierId', party.id);
+      _replacePartyId(isCustomer ? customers : suppliers, party.id, nextId);
+      _setSyncStatus('Saved ${isCustomer ? 'customer' : 'supplier'} to SQL Server');
+    } catch (error) {
+      if (queueOnFail && job != null) _enqueueSyncJob(job);
+      _setSyncStatus('SQL party save failed: ${_shortError(error)}');
+      if (!queueOnFail) rethrow;
+    }
+  }
+
+  Future<void> _syncUser(AppUser user, {required bool isNew, bool queueOnFail = false, SyncJob? job}) async {
+    try {
+      final roleId = roleIds[user.role] ?? switch (user.role) { 'Admin' => 1, 'Manager' => 2, _ => 3 };
+      if (isNew) {
+        final row = await api.post('/users', {'fullName': user.name, 'email': user.email, 'password': user.defaultPassword, 'roleId': roleId, 'branchId': null});
+        final created = row['0'] is Map ? Map<String, dynamic>.from(row['0'] as Map) : row;
+        _replaceUserId(user.id, _int(created, 'UserId', user.id));
+      } else {
+        await api.put('/users/${user.id}', {'fullName': user.name, 'roleId': roleId, 'isActive': user.active});
+        if (user.password.isNotEmpty) {
+          await api.put('/users/${user.id}/password', {'password': user.password});
+        }
+      }
+      _setSyncStatus('Saved user to SQL Server');
+    } catch (error) {
+      if (queueOnFail && job != null) _enqueueSyncJob(job);
+      _setSyncStatus('SQL user save failed: ${_shortError(error)}');
+      if (!queueOnFail) rethrow;
+    }
+  }
+
+  Future<bool> changeOwnPassword(AppUser user, String currentPassword, String newPassword) async {
+    if (newPassword.length < 6) {
+      _setSyncStatus('Password must be at least 6 characters');
+      return false;
+    }
+    if (sqlConnected) {
+      try {
+        await api.put('/users/me/password', {'currentPassword': currentPassword, 'newPassword': newPassword});
+        lastLoginEmail = user.email;
+        lastLoginPassword = newPassword;
+        _setSyncStatus('Password changed successfully');
+        return true;
+      } catch (error) {
+        _setSyncStatus('Password change failed: ${_shortError(error)}');
+        return false;
+      }
+    }
+
+    final index = users.indexWhere((item) => item.id == user.id || item.email.toLowerCase() == user.email.toLowerCase());
+    if (index == -1 || users[index].defaultPassword != currentPassword) {
+      _setSyncStatus('Current password is incorrect');
+      return false;
+    }
+    users[index] = users[index].copyWith(password: newPassword);
+    lastLoginEmail = user.email;
+    lastLoginPassword = newPassword;
+    notifyListeners();
+    _setSyncStatus('Password changed locally');
+    return true;
+  }
+
+  Future<void> _syncExpense(Expense expense, {bool queueOnFail = false, SyncJob? job}) async {
+    try {
+      await api.post('/expenses', {'branchId': 1, 'category': expense.category, 'amount': expense.amount, 'notes': expense.title, 'expenseDate': DateTime.now().toIso8601String().substring(0, 10)});
+      _setSyncStatus('Saved expense to SQL Server');
+    } catch (error) {
+      if (queueOnFail && job != null) _enqueueSyncJob(job);
+      _setSyncStatus('SQL expense save failed: ${_shortError(error)}');
+      if (!queueOnFail) rethrow;
+    }
+  }
+
+  Future<void> _syncInvoice(Invoice invoice, List<InvoiceLine> lines, {bool queueOnFail = false, SyncJob? job}) async {
+    try {
+      final row = await api.post('/invoices', {
+        'branchId': 1,
+        'warehouseId': 1,
+        'customerId': _customerIdByName(invoice.customer),
+        'discountAmount': 0,
+        'payments': invoice.paid > 0 ? [{'method': invoice.method, 'amount': invoice.paid}] : [],
+        'items': [
+          for (final line in lines) {'productId': line.product.id, 'quantity': line.quantity, 'unitPrice': line.product.salePrice, 'discountAmount': 0, 'taxAmount': 0}
+        ],
+      });
+      _replaceInvoice(invoice.id, invoice.copyWith(id: _int(row, 'invoiceId', invoice.id), number: _string(row, 'invoiceNo', invoice.number)));
+      _setSyncStatus('Saved invoice to SQL Server');
+    } catch (error) {
+      if (queueOnFail && job != null) _enqueueSyncJob(job);
+      _setSyncStatus('SQL invoice save failed: ${_shortError(error)}');
+      if (!queueOnFail) rethrow;
+    }
+  }
+
+  Future<void> _deleteSql(String path, {bool queueOnFail = false, SyncJob? job}) async {
+    try {
+      await api.delete(path);
+      _setSyncStatus('Deleted record from SQL Server');
+    } catch (error) {
+      if (queueOnFail && job != null) _enqueueSyncJob(job);
+      _setSyncStatus('SQL delete failed: ${_shortError(error)}');
+      if (!queueOnFail) rethrow;
+    }
+  }
+
+  void _replaceProductId(int oldId, int newId) {
+    final index = products.indexWhere((item) => item.id == oldId);
+    if (index != -1 && oldId != newId) products[index] = products[index].copyWith(id: newId);
+  }
+
+  void _replacePartyId(List<Party> list, int oldId, int newId) {
+    final index = list.indexWhere((item) => item.id == oldId);
+    if (index != -1 && oldId != newId) list[index] = list[index].copyWith(id: newId);
+  }
+
+  void _replaceUserId(int oldId, int newId) {
+    final index = users.indexWhere((item) => item.id == oldId);
+    if (index != -1 && oldId != newId) users[index] = users[index].copyWith(id: newId);
+  }
+
+  void _replaceInvoice(int oldId, Invoice invoice) {
+    final index = invoices.indexWhere((item) => item.id == oldId);
+    if (index != -1) invoices[index] = invoice;
+  }
+
+  int? _customerIdByName(String name) {
+    final matches = customers.where((party) => party.name == name && party.id > 0);
+    return matches.isEmpty ? null : matches.first.id;
+  }
+
+  SyncJob _job(String type, String action, int recordId, Map<String, dynamic> payload) {
+    return SyncJob(
+      id: '${type}_${action}_$recordId',
+      type: type,
+      action: action,
+      recordId: recordId,
+      payload: payload,
+      createdAt: DateTime.now(),
+    );
+  }
+
+  void _enqueueSyncJob(SyncJob job) {
+    pendingSyncJobs.removeWhere((item) => item.id == job.id);
+    pendingSyncJobs.add(job);
+    _setSyncStatus('Queued ${pendingSyncJobs.length} record(s) for SQL sync');
+  }
+
+  void _setSyncStatus(String status) {
+    syncStatus = status;
+    _saveToDisk();
+    super.notifyListeners();
+  }
+}
+
+List<Map<String, dynamic>> _list(Object? value) {
+  if (value is! List) return const [];
+  return value.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
+}
+
+String _string(Map<String, dynamic> json, String key, [String fallback = '']) => json[key]?.toString() ?? fallback;
+int _int(Map<String, dynamic> json, String key, [int fallback = 0]) {
+  final value = json[key];
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '') ?? fallback;
+}
+
+double _double(Map<String, dynamic> json, String key, [double fallback = 0]) {
+  final value = json[key];
+  if (value is num) return value.toDouble();
+  return double.tryParse(value?.toString() ?? '') ?? fallback;
+}
+
+bool _bool(Map<String, dynamic> json, String key, [bool fallback = false]) => json[key] is bool ? json[key] as bool : fallback;
+
+Product _productFromJson(Map<String, dynamic> json) {
+  return Product(
+    id: _int(json, 'id'),
+    name: _string(json, 'name'),
+    sku: _string(json, 'sku'),
+    barcode: _string(json, 'barcode'),
+    salePrice: _double(json, 'salePrice'),
+    purchasePrice: _double(json, 'purchasePrice'),
+    stock: _double(json, 'stock'),
+    minStock: _double(json, 'minStock'),
+    category: _string(json, 'category', 'General'),
+  );
+}
+
+Map<String, dynamic> _productToJson(Product product) => {
+      'id': product.id,
+      'name': product.name,
+      'sku': product.sku,
+      'barcode': product.barcode,
+      'salePrice': product.salePrice,
+      'purchasePrice': product.purchasePrice,
+      'stock': product.stock,
+      'minStock': product.minStock,
+      'category': product.category,
+    };
+
+Party _partyFromJson(Map<String, dynamic> json) {
+  return Party(id: _int(json, 'id'), name: _string(json, 'name'), phone: _string(json, 'phone'), email: _string(json, 'email'), balance: _double(json, 'balance'));
+}
+
+Map<String, dynamic> _partyToJson(Party party) => {'id': party.id, 'name': party.name, 'phone': party.phone, 'email': party.email, 'balance': party.balance};
+
+AppUser _userFromJson(Map<String, dynamic> json) {
+  return AppUser(id: _int(json, 'id'), name: _string(json, 'name'), email: _string(json, 'email'), role: _string(json, 'role', 'Cashier'), active: _bool(json, 'active', true), password: _string(json, 'password'));
+}
+
+Map<String, dynamic> _userToJson(AppUser user) => {'id': user.id, 'name': user.name, 'email': user.email, 'role': user.role, 'active': user.active, 'password': user.password};
+
+PurchaseOrder _purchaseFromJson(Map<String, dynamic> json) {
+  return PurchaseOrder(id: _int(json, 'id'), supplier: _string(json, 'supplier'), orderNo: _string(json, 'orderNo'), status: _string(json, 'status', 'Pending'), total: _double(json, 'total'));
+}
+
+Map<String, dynamic> _purchaseToJson(PurchaseOrder order) => {'id': order.id, 'supplier': order.supplier, 'orderNo': order.orderNo, 'status': order.status, 'total': order.total};
+
+Expense _expenseFromJson(Map<String, dynamic> json) {
+  return Expense(id: _int(json, 'id'), title: _string(json, 'title'), category: _string(json, 'category'), amount: _double(json, 'amount'));
+}
+
+Map<String, dynamic> _expenseToJson(Expense expense) => {'id': expense.id, 'title': expense.title, 'category': expense.category, 'amount': expense.amount};
+
+Invoice _invoiceFromJson(Map<String, dynamic> json) {
+  return Invoice(
+    id: _int(json, 'id'),
+    number: _string(json, 'number'),
+    customer: _string(json, 'customer'),
+    total: _double(json, 'total'),
+    paid: _double(json, 'paid'),
+    method: _string(json, 'method'),
+    createdAt: DateTime.tryParse(_string(json, 'createdAt')) ?? DateTime.now(),
+  );
+}
+
+Map<String, dynamic> _invoiceToJson(Invoice invoice) => {
+      'id': invoice.id,
+      'number': invoice.number,
+      'customer': invoice.customer,
+      'total': invoice.total,
+      'paid': invoice.paid,
+      'method': invoice.method,
+      'createdAt': invoice.createdAt.toIso8601String(),
+    };
+
+InvoiceLine _invoiceLineFromJson(Map<String, dynamic> json) {
+  return InvoiceLine(
+    product: Product(
+      id: _int(json, 'productId'),
+      name: _string(json, 'productName'),
+      sku: _string(json, 'sku'),
+      barcode: _string(json, 'barcode'),
+      salePrice: _double(json, 'salePrice'),
+      purchasePrice: _double(json, 'purchasePrice'),
+      stock: _double(json, 'stock'),
+      minStock: _double(json, 'minStock'),
+      category: _string(json, 'category'),
+    ),
+    quantity: _double(json, 'quantity'),
+  );
+}
+
+Map<String, dynamic> _invoiceLineToJson(InvoiceLine line) => {
+      'productId': line.product.id,
+      'productName': line.product.name,
+      'sku': line.product.sku,
+      'barcode': line.product.barcode,
+      'salePrice': line.product.salePrice,
+      'purchasePrice': line.product.purchasePrice,
+      'stock': line.product.stock,
+      'minStock': line.product.minStock,
+      'category': line.product.category,
+      'quantity': line.quantity,
+    };
+
+StockMovement _movementFromJson(Map<String, dynamic> json) {
+  return StockMovement(id: _int(json, 'id'), product: _string(json, 'product'), type: _string(json, 'type', 'In'), quantity: _double(json, 'quantity'), notes: _string(json, 'notes'));
+}
+
+Map<String, dynamic> _movementToJson(StockMovement movement) => {'id': movement.id, 'product': movement.product, 'type': movement.type, 'quantity': movement.quantity, 'notes': movement.notes};
+
+Product _apiProductFromJson(Map<String, dynamic> json) {
+  return Product(
+    id: _int(json, 'ProductId'),
+    name: _string(json, 'Name'),
+    sku: _string(json, 'SKU'),
+    barcode: _string(json, 'Barcode'),
+    salePrice: _double(json, 'SalePrice'),
+    purchasePrice: _double(json, 'PurchasePrice'),
+    stock: _double(json, 'StockOnHand'),
+    minStock: _double(json, 'MinStockLevel'),
+    category: _string(json, 'CategoryName', 'General'),
+  );
+}
+
+Party _apiCustomerFromJson(Map<String, dynamic> json) {
+  return Party(id: _int(json, 'CustomerId'), name: _string(json, 'Name'), phone: _string(json, 'Phone', '-'), email: _string(json, 'Email'), balance: _double(json, 'CreditLimit'));
+}
+
+Party _apiSupplierFromJson(Map<String, dynamic> json) {
+  return Party(id: _int(json, 'SupplierId'), name: _string(json, 'Name'), phone: _string(json, 'Phone', '-'), email: _string(json, 'Email'), balance: 0);
+}
+
+AppUser _apiUserFromJson(Map<String, dynamic> json) {
+  return AppUser(id: _int(json, 'UserId'), name: _string(json, 'FullName'), email: _string(json, 'Email'), role: _string(json, 'RoleName', 'Cashier'), active: _bool(json, 'IsActive', true));
+}
+
+Invoice _apiInvoiceFromJson(Map<String, dynamic> json) {
+  return Invoice(
+    id: _int(json, 'InvoiceId'),
+    number: _string(json, 'InvoiceNo'),
+    customer: _string(json, 'CustomerName', 'Walk-in Customer'),
+    total: _double(json, 'Total'),
+    paid: _double(json, 'PaidAmount'),
+    method: 'SQL',
+    createdAt: DateTime.tryParse(_string(json, 'CreatedAt')) ?? DateTime.now(),
+  );
+}
+
+String? _nullable(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty || trimmed == '-' ? null : trimmed;
+}
+
+String _shortError(Object error) {
+  final text = error.toString().replaceFirst('HttpException: ', '');
+  return text.length > 120 ? '${text.substring(0, 120)}...' : text;
+}
+
+bool _sameDate(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+
+class Product {
+  const Product({
+    required this.id,
+    required this.name,
+    required this.sku,
+    required this.barcode,
+    required this.salePrice,
+    required this.purchasePrice,
+    required this.stock,
+    required this.minStock,
+    required this.category,
+  });
+
+  final int id;
+  final String name;
+  final String sku;
+  final String barcode;
+  final double salePrice;
+  final double purchasePrice;
+  final double stock;
+  final double minStock;
+  final String category;
+
+  Product copyWith({int? id, String? name, String? sku, String? barcode, double? salePrice, double? purchasePrice, double? stock, double? minStock, String? category}) {
+    return Product(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      sku: sku ?? this.sku,
+      barcode: barcode ?? this.barcode,
+      salePrice: salePrice ?? this.salePrice,
+      purchasePrice: purchasePrice ?? this.purchasePrice,
+      stock: stock ?? this.stock,
+      minStock: minStock ?? this.minStock,
+      category: category ?? this.category,
+    );
+  }
+}
+
+Product _withProductCodes(Product product, {required int nextId}) {
+  final sku = product.sku.trim().isEmpty ? _generateSku(product.name, product.category, nextId) : product.sku.trim();
+  final barcode = product.barcode.trim().isEmpty ? _generateBarcode(nextId) : product.barcode.trim();
+  return product.copyWith(sku: sku, barcode: barcode);
+}
+
+String _generateSku(String name, String category, int id) {
+  final categoryPart = _codePart(category, fallback: 'GEN', length: 3);
+  final namePart = _codePart(name, fallback: 'PRD', length: 4);
+  return '$categoryPart-$namePart-${id.toString().padLeft(5, '0')}';
+}
+
+String _codePart(String value, {required String fallback, required int length}) {
+  final cleaned = value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]+'), ' ').trim();
+  if (cleaned.isEmpty) return fallback;
+  final words = cleaned.split(RegExp(r'\s+'));
+  final initials = words.map((word) => word[0]).join();
+  final candidate = initials.length >= 2 ? initials : cleaned.replaceAll(' ', '');
+  return candidate.padRight(length, 'X').substring(0, length);
+}
+
+String _generateBarcode(int id) {
+  final base = '896${DateTime.now().millisecondsSinceEpoch.toString().substring(5, 11)}${id.toString().padLeft(3, '0')}';
+  final digits = base.substring(0, 12);
+  return '$digits${_ean13CheckDigit(digits)}';
+}
+
+int _ean13CheckDigit(String first12Digits) {
+  var sum = 0;
+  for (var i = 0; i < first12Digits.length; i++) {
+    final digit = int.tryParse(first12Digits[i]) ?? 0;
+    sum += i.isEven ? digit : digit * 3;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+class Party {
+  const Party({required this.id, required this.name, required this.phone, required this.email, required this.balance});
+
+  final int id;
+  final String name;
+  final String phone;
+  final String email;
+  final double balance;
+
+  Party copyWith({int? id, String? name, String? phone, String? email, double? balance}) {
+    return Party(id: id ?? this.id, name: name ?? this.name, phone: phone ?? this.phone, email: email ?? this.email, balance: balance ?? this.balance);
+  }
+}
+
+class AppUser {
+  const AppUser({required this.id, required this.name, required this.email, required this.role, required this.active, this.password = ''});
+
+  final int id;
+  final String name;
+  final String email;
+  final String role;
+  final bool active;
+  final String password;
+  String get defaultPassword => password.isNotEmpty
+      ? password
+      : switch (role) {
+        'Admin' => 'Admin@12345',
+        'Manager' => 'Manager@12345',
+        _ => 'Cashier@12345',
+      };
+  bool get isAdmin => role == 'Admin';
+  bool get isManager => role == 'Manager';
+  bool get isCashier => role == 'Cashier';
+  bool get canManageUsers => isAdmin;
+  bool get canManageFinance => isAdmin;
+  bool get canManageCatalog => isAdmin || isManager;
+  bool get canManageOperations => isAdmin || isManager;
+  bool get canUsePos => isAdmin || isManager || isCashier;
+  bool get canViewReports => isAdmin || isManager;
+
+  AppUser copyWith({int? id, String? name, String? email, String? role, bool? active, String? password}) {
+    return AppUser(id: id ?? this.id, name: name ?? this.name, email: email ?? this.email, role: role ?? this.role, active: active ?? this.active, password: password ?? this.password);
+  }
+}
+
+class PurchaseOrder {
+  const PurchaseOrder({required this.id, required this.supplier, required this.orderNo, required this.status, required this.total});
+
+  final int id;
+  final String supplier;
+  final String orderNo;
+  final String status;
+  final double total;
+
+  PurchaseOrder copyWith({int? id, String? supplier, String? orderNo, String? status, double? total}) {
+    return PurchaseOrder(id: id ?? this.id, supplier: supplier ?? this.supplier, orderNo: orderNo ?? this.orderNo, status: status ?? this.status, total: total ?? this.total);
+  }
+}
+
+class Expense {
+  const Expense({required this.id, required this.title, required this.category, required this.amount});
+
+  final int id;
+  final String title;
+  final String category;
+  final double amount;
+
+  Expense copyWith({int? id, String? title, String? category, double? amount}) {
+    return Expense(id: id ?? this.id, title: title ?? this.title, category: category ?? this.category, amount: amount ?? this.amount);
+  }
+}
+
+class StockMovement {
+  const StockMovement({required this.id, required this.product, required this.type, required this.quantity, required this.notes});
+
+  final int id;
+  final String product;
+  final String type;
+  final double quantity;
+  final String notes;
+
+  StockMovement copyWith({int? id, String? product, String? type, double? quantity, String? notes}) {
+    return StockMovement(id: id ?? this.id, product: product ?? this.product, type: type ?? this.type, quantity: quantity ?? this.quantity, notes: notes ?? this.notes);
+  }
+}
+
+class InvoiceLine {
+  const InvoiceLine({required this.product, required this.quantity});
+
+  final Product product;
+  final double quantity;
+  double get total => product.salePrice * quantity;
+}
+
+class SyncJob {
+  const SyncJob({required this.id, required this.type, required this.action, required this.recordId, required this.payload, required this.createdAt});
+
+  final String id;
+  final String type;
+  final String action;
+  final int recordId;
+  final Map<String, dynamic> payload;
+  final DateTime createdAt;
+
+  factory SyncJob.fromJson(Map<String, dynamic> json) {
+    return SyncJob(
+      id: _string(json, 'id'),
+      type: _string(json, 'type'),
+      action: _string(json, 'action'),
+      recordId: _int(json, 'recordId'),
+      payload: Map<String, dynamic>.from((json['payload'] as Map?) ?? const {}),
+      createdAt: DateTime.tryParse(_string(json, 'createdAt')) ?? DateTime.now(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'type': type,
+        'action': action,
+        'recordId': recordId,
+        'payload': payload,
+        'createdAt': createdAt.toIso8601String(),
+      };
+}
+
+class Invoice {
+  const Invoice({required this.id, required this.number, required this.customer, required this.total, required this.paid, required this.method, required this.createdAt});
+
+  final int id;
+  final String number;
+  final String customer;
+  final double total;
+  final double paid;
+  final String method;
+  final DateTime createdAt;
+  double get due => total - paid;
+
+  Invoice copyWith({int? id, String? number, String? customer, double? total, double? paid, String? method, DateTime? createdAt}) {
+    return Invoice(
+      id: id ?? this.id,
+      number: number ?? this.number,
+      customer: customer ?? this.customer,
+      total: total ?? this.total,
+      paid: paid ?? this.paid,
+      method: method ?? this.method,
+      createdAt: createdAt ?? this.createdAt,
+    );
+  }
+}
+
+class ModuleDef {
+  const ModuleDef({required this.title, required this.icon, required this.builder, required this.allowed});
+
+  final String title;
+  final IconData icon;
+  final WidgetBuilder builder;
+  final bool Function(AppUser user) allowed;
+}
+
+class UserScope extends InheritedWidget {
+  const UserScope({super.key, required this.user, required super.child});
+
+  final AppUser user;
+
+  static AppUser of(BuildContext context) {
+    final scope = context.dependOnInheritedWidgetOfExactType<UserScope>();
+    return scope!.user;
+  }
+
+  @override
+  bool updateShouldNotify(UserScope oldWidget) => oldWidget.user != user;
+}
+
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key, required this.onLogin});
+
+  final ValueChanged<AppUser> onLogin;
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final email = TextEditingController(text: 'admin@invpro.local');
+  final password = TextEditingController(text: 'Admin@12345');
+  bool obscure = true;
+  bool loggingIn = false;
+
+  @override
+  void dispose() {
+    email.dispose();
+    password.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  CircleAvatar(
+                    radius: 28,
+                    backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                    child: const Text('IP'),
+                  ),
+                  const SizedBox(height: 18),
+                  Text('InvPro login', textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 18),
+                  TextField(
+                    controller: email,
+                    decoration: const InputDecoration(prefixIcon: Icon(Icons.mail_outline), labelText: 'Email', border: OutlineInputBorder()),
+                    onSubmitted: (_) => _login(),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: password,
+                    obscureText: obscure,
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(onPressed: () => setState(() => obscure = !obscure), icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined)),
+                      labelText: 'Password',
+                      border: const OutlineInputBorder(),
+                    ),
+                    onSubmitted: (_) => _login(),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(onPressed: loggingIn ? null : _login, icon: const Icon(Icons.login), label: Text(loggingIn ? 'Connecting...' : 'Login')),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    children: [
+                      ActionChip(label: const Text('Admin'), onPressed: () => _fill('admin@invpro.local', 'Admin@12345')),
+                      ActionChip(label: const Text('Manager'), onPressed: () => _fill('manager@invpro.local', 'Manager@12345')),
+                      ActionChip(label: const Text('Cashier'), onPressed: () => _fill('cashier@invpro.local', 'Cashier@12345')),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _fill(String nextEmail, String nextPassword) {
+    setState(() {
+      email.text = nextEmail;
+      password.text = nextPassword;
+    });
+  }
+
+  Future<void> _login() async {
+    setState(() => loggingIn = true);
+    final store = StoreScope.of(context);
+    final user = await store.login(email.text, password.text);
+    if (!mounted) return;
+    setState(() => loggingIn = false);
+    if (user == null) {
+      _showMessage(context, 'Invalid email, password, or disabled user');
+      return;
+    }
+    _showMessage(context, store.syncStatus);
+    widget.onLogin(user);
+  }
+}
+
+class ShellPage extends StatefulWidget {
+  const ShellPage({super.key, required this.user, required this.isDark, required this.onThemeChanged, required this.onLogout});
+
+  final AppUser user;
+  final bool isDark;
+  final VoidCallback onThemeChanged;
+  final VoidCallback onLogout;
+
+  @override
+  State<ShellPage> createState() => _ShellPageState();
+}
+
+class _ShellPageState extends State<ShellPage> {
+  int selected = 0;
+  final allModules = <ModuleDef>[
+    ModuleDef(title: 'Dashboard', icon: Icons.dashboard_outlined, builder: (_) => const DashboardView(), allowed: (_) => true),
+    ModuleDef(title: 'POS', icon: Icons.point_of_sale_outlined, builder: (_) => const PosView(), allowed: (user) => user.canUsePos),
+    ModuleDef(title: 'Products', icon: Icons.inventory_2_outlined, builder: (_) => const ProductsView(), allowed: (user) => user.canManageCatalog),
+    ModuleDef(title: 'Inventory', icon: Icons.warehouse_outlined, builder: (_) => const InventoryView(), allowed: (user) => user.canManageOperations),
+    ModuleDef(title: 'Purchases', icon: Icons.shopping_cart_checkout_outlined, builder: (_) => const PurchasesView(), allowed: (user) => user.canManageOperations),
+    ModuleDef(title: 'Customers', icon: Icons.groups_outlined, builder: (_) => const PartiesView(kind: PartyKind.customer), allowed: (_) => true),
+    ModuleDef(title: 'Suppliers', icon: Icons.local_shipping_outlined, builder: (_) => const PartiesView(kind: PartyKind.supplier), allowed: (user) => user.canManageOperations),
+    ModuleDef(title: 'Finance', icon: Icons.account_balance_wallet_outlined, builder: (_) => const FinanceView(), allowed: (user) => user.canManageFinance),
+    ModuleDef(title: 'Reports', icon: Icons.analytics_outlined, builder: (_) => const ReportsView(), allowed: (user) => user.canViewReports),
+    ModuleDef(title: 'Users', icon: Icons.admin_panel_settings_outlined, builder: (_) => const UsersView(), allowed: (user) => user.canManageUsers),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final wide = MediaQuery.sizeOf(context).width >= 1000;
+    final store = StoreScope.of(context);
+    final cashierMode = widget.user.isCashier;
+    final modules = cashierMode ? allModules.where((module) => module.title == 'POS').toList() : allModules.where((module) => module.allowed(widget.user)).toList();
+    if (selected >= modules.length) selected = 0;
+    return UserScope(
+      user: widget.user,
+      child: Scaffold(
+      body: Row(
+        children: [
+          if (wide && !cashierMode)
+            NavigationRail(
+              extended: MediaQuery.sizeOf(context).width >= 1280,
+              selectedIndex: selected,
+              onDestinationSelected: (value) => setState(() => selected = value),
+              leading: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Tooltip(
+                  message: '${widget.user.name} (${widget.user.role})',
+                  child: CircleAvatar(child: Text(widget.user.role.substring(0, 1))),
+                ),
+              ),
+              destinations: [
+                for (final module in modules)
+                  NavigationRailDestination(icon: Icon(module.icon), label: Text(module.title)),
+              ],
+            ),
+          Expanded(
+            child: CustomScrollView(
+              slivers: [
+                SliverAppBar(
+                  pinned: true,
+                  automaticallyImplyLeading: false,
+                  title: Text(modules[selected].title),
+                  actions: [
+                    if (!cashierMode) IconButton(tooltip: 'Scan barcode', onPressed: () => _showMessage(context, 'Barcode scan ready'), icon: const Icon(Icons.qr_code_scanner_outlined)),
+                    if (!cashierMode) IconButton(tooltip: 'Toggle theme', onPressed: widget.onThemeChanged, icon: Icon(widget.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined)),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Tooltip(
+                        message: store.syncStatus,
+                        child: Chip(
+                          avatar: Icon(store.sqlConnected ? Icons.storage_outlined : Icons.save_outlined, size: 18),
+                          label: Text(store.pendingSyncJobs.isEmpty ? (store.sqlConnected ? 'SQL' : 'Local') : 'Sync ${store.pendingSyncJobs.length}'),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Sync pending records',
+                      onPressed: store.pendingSyncJobs.isEmpty ? null : () => unawaited(store.tryReconnectAndSync()),
+                      icon: const Icon(Icons.cloud_sync_outlined),
+                    ),
+                    Chip(avatar: const Icon(Icons.person_outline, size: 18), label: Text(cashierMode ? widget.user.name : widget.user.role)),
+                    IconButton(tooltip: 'Change password', onPressed: () => _openChangePasswordDialog(context, widget.user), icon: const Icon(Icons.lock_reset_outlined)),
+                    IconButton(tooltip: 'Logout', onPressed: widget.onLogout, icon: const Icon(Icons.logout)),
+                    const SizedBox(width: 8),
+                  ],
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.all(16),
+                  sliver: SliverToBoxAdapter(
+                    child: modules[selected].builder(context),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: wide || cashierMode
+          ? null
+          : SafeArea(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (var index = 0; index < modules.length; index++)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                        child: ChoiceChip(
+                          selected: selected == index,
+                          avatar: Icon(modules[index].icon, size: 18),
+                          label: Text(modules[index].title),
+                          onSelected: (_) => setState(() => selected = index),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+      ),
+    );
+  }
+}
+
+class DashboardView extends StatelessWidget {
+  const DashboardView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    final recentInvoices = store.invoices.take(4).map((invoice) => [invoice.number, invoice.customer, invoice.due <= 0 ? 'Paid' : money.format(invoice.due)]).toList();
+    final lowStock = store.products.where((product) => product.stock <= product.minStock).take(4).map((product) => [product.name, product.stock.toStringAsFixed(0), product.category]).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            StatTile(label: "Today's sales", value: money.format(store.todaysSales), icon: Icons.payments_outlined, accent: const Color(0xFF0E7C66)),
+            StatTile(label: 'Low stock', value: '${store.lowStockCount}', icon: Icons.warning_amber_outlined, accent: const Color(0xFFD97706)),
+            StatTile(label: 'Out of stock', value: '${store.outOfStockCount}', icon: Icons.remove_shopping_cart_outlined, accent: const Color(0xFFDC2626)),
+            StatTile(label: 'Pending dues', value: money.format(store.pendingDues), icon: Icons.receipt_long_outlined, accent: const Color(0xFF2563EB)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        ResponsiveColumns(
+          left: DataPanel(title: 'Low stock products', rows: lowStock.isEmpty ? const [['No low stock items', '-', 'OK']] : lowStock),
+          right: DataPanel(title: 'Recent invoices', rows: recentInvoices.isEmpty ? const [['No invoices posted yet', '-', '-']] : recentInvoices),
+        ),
+      ],
+    );
+  }
+}
+
+class StatTile extends StatelessWidget {
+  const StatTile({super.key, required this.label, required this.value, required this.icon, required this.accent});
+
+  final String label;
+  final String value;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 240,
+      height: 118,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              CircleAvatar(backgroundColor: accent.withValues(alpha: .13), foregroundColor: accent, child: Icon(icon)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 6),
+                    Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class PosView extends StatefulWidget {
+  const PosView({super.key});
+
+  @override
+  State<PosView> createState() => _PosViewState();
+}
+
+class _PosViewState extends State<PosView> {
+  final search = TextEditingController();
+  final List<InvoiceLine> cart = [];
+  String paymentMethod = 'Cash';
+  String customer = 'Walk-in Customer';
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    final total = cart.fold(0.0, (sum, line) => sum + line.total);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 980;
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            SizedBox(
+              width: wide ? (constraints.maxWidth - 16) * .62 : constraints.maxWidth,
+              child: AppPanel(
+                title: 'Sell items',
+                horizontalScroll: false,
+                action: IconButton(
+                  tooltip: 'Clear bill',
+                  onPressed: cart.isEmpty ? null : () => setState(cart.clear),
+                  icon: const Icon(Icons.delete_sweep_outlined),
+                ),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: search,
+                      decoration: InputDecoration(
+                        prefixIcon: const Icon(Icons.qr_code_scanner_outlined),
+                        suffixIcon: IconButton(onPressed: () => _addBySearch(store), icon: const Icon(Icons.add_shopping_cart_outlined)),
+                        labelText: 'Scan barcode, SKU, or product name',
+                        border: const OutlineInputBorder(),
+                      ),
+                      onSubmitted: (_) => _addBySearch(store),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final product in store.products)
+                          ActionChip(
+                            avatar: const Icon(Icons.add, size: 18),
+                            label: Text(product.name),
+                            onPressed: product.stock <= 0 ? null : () => _addProduct(product),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    DataTable(
+                      columns: const [
+                        DataColumn(label: Text('Item')),
+                        DataColumn(label: Text('Qty'), numeric: true),
+                        DataColumn(label: Text('Total'), numeric: true),
+                        DataColumn(label: Text('')),
+                      ],
+                      rows: [
+                        for (final line in cart)
+                          DataRow(cells: [
+                            DataCell(Text(line.product.name)),
+                            DataCell(Text(line.quantity.toStringAsFixed(0))),
+                            DataCell(Text(money.format(line.total))),
+                            DataCell(IconButton(onPressed: () => setState(() => cart.remove(line)), icon: const Icon(Icons.close))),
+                          ]),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(
+              width: wide ? (constraints.maxWidth - 16) * .38 : constraints.maxWidth,
+              child: AppPanel(
+                title: 'Payment',
+                horizontalScroll: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DropdownButtonFormField<String>(
+                      initialValue: customer,
+                      decoration: const InputDecoration(labelText: 'Customer', border: OutlineInputBorder()),
+                      items: [for (final party in store.customers) DropdownMenuItem(value: party.name, child: Text(party.name))],
+                      onChanged: (value) => setState(() => customer = value ?? customer),
+                    ),
+                    const SizedBox(height: 12),
+                    TotalRow(label: 'Subtotal', value: money.format(total)),
+                    const TotalRow(label: 'Discount', value: 'PKR 0'),
+                    const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
+                    const Divider(height: 28),
+                    TotalRow(label: 'Grand total', value: money.format(total), strong: true),
+                    const SizedBox(height: 16),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'Cash', icon: Icon(Icons.payments_outlined), label: Text('Cash')),
+                        ButtonSegment(value: 'Card', icon: Icon(Icons.credit_card), label: Text('Card')),
+                        ButtonSegment(value: 'Credit', icon: Icon(Icons.schedule_outlined), label: Text('Credit')),
+                      ],
+                      selected: {paymentMethod},
+                      onSelectionChanged: (value) => setState(() => paymentMethod = value.first),
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: cart.isEmpty ? null : () => _postInvoice(store, total),
+                      icon: const Icon(Icons.receipt_long_outlined),
+                      label: const Text('Post invoice'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(onPressed: cart.isEmpty ? null : () => _showMessage(context, 'Print job prepared'), icon: const Icon(Icons.print_outlined), label: const Text('Thermal / A4 print')),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _addBySearch(AppStore store) {
+    final term = search.text.trim().toLowerCase();
+    if (term.isEmpty) return;
+    final matches = store.products.where((product) {
+      return product.name.toLowerCase().contains(term) || product.sku.toLowerCase() == term || product.barcode.toLowerCase() == term;
+    });
+    if (matches.isNotEmpty) {
+      _addProduct(matches.first);
+      search.clear();
+    } else {
+      _showMessage(context, 'Product not found');
+    }
+  }
+
+  void _addProduct(Product product) {
+    final index = cart.indexWhere((line) => line.product.id == product.id);
+    setState(() {
+      if (index == -1) {
+        cart.add(InvoiceLine(product: product, quantity: 1));
+      } else {
+        cart[index] = InvoiceLine(product: product, quantity: cart[index].quantity + 1);
+      }
+    });
+  }
+
+  void _postInvoice(AppStore store, double total) {
+    final invoice = store.postInvoice(customer: customer, lines: List.of(cart), method: paymentMethod, paid: paymentMethod == 'Credit' ? 0 : total);
+    setState(cart.clear);
+    _showMessage(context, 'Invoice ${invoice.number} posted');
+  }
+}
+
+class ProductsView extends StatelessWidget {
+  const ProductsView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final user = _currentUser(context);
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    return AppPanel(
+      title: 'Product Management',
+      action: FilledButton.icon(onPressed: user.canManageCatalog ? () => _openProductDialog(context) : null, icon: const Icon(Icons.add), label: const Text('New product')),
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('Product')),
+          DataColumn(label: Text('SKU')),
+          DataColumn(label: Text('Stock'), numeric: true),
+          DataColumn(label: Text('Price'), numeric: true),
+          DataColumn(label: Text('Actions')),
+        ],
+        rows: [
+          for (final product in store.products)
+            DataRow(cells: [
+              DataCell(Text(product.name)),
+              DataCell(Text(product.sku)),
+              DataCell(Text(product.stock.toStringAsFixed(0))),
+              DataCell(Text(money.format(product.salePrice))),
+              DataCell(Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(tooltip: 'Print barcode label', onPressed: () => _printBarcodeLabel(context, product), icon: const Icon(Icons.qr_code_2_outlined)),
+                  IconButton(tooltip: 'Edit', onPressed: user.canManageCatalog ? () => _openProductDialog(context, product: product) : null, icon: const Icon(Icons.edit_outlined)),
+                  IconButton(tooltip: 'Delete', onPressed: user.isAdmin ? () => store.deleteProduct(product.id) : null, icon: const Icon(Icons.delete_outline)),
+                ],
+              )),
+            ]),
+        ],
+      ),
+    );
+  }
+}
+
+class InventoryView extends StatelessWidget {
+  const InventoryView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final user = _currentUser(context);
+    return ResponsiveColumns(
+      left: AppPanel(
+        title: 'Stock balances',
+        action: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            OutlinedButton.icon(
+              onPressed: user.canManageOperations ? () => _repairStock(context) : null,
+              icon: const Icon(Icons.healing_outlined),
+              label: const Text('Repair stock'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(onPressed: user.canManageOperations ? () => _openStockDialog(context) : null, icon: const Icon(Icons.sync_alt), label: const Text('Stock move')),
+          ],
+        ),
+        child: DataTable(
+          columns: const [
+            DataColumn(label: Text('Product')),
+            DataColumn(label: Text('Stock'), numeric: true),
+            DataColumn(label: Text('Min'), numeric: true),
+            DataColumn(label: Text('Status')),
+          ],
+          rows: [
+            for (final product in store.products)
+              DataRow(cells: [
+                DataCell(Text(product.name)),
+                DataCell(Text(product.stock.toStringAsFixed(0))),
+                DataCell(Text(product.minStock.toStringAsFixed(0))),
+                DataCell(StatusPill(label: product.stock <= product.minStock ? 'Low' : 'OK')),
+              ]),
+          ],
+        ),
+      ),
+      right: DataPanel(
+        title: 'Stock formula',
+        rows: [
+          ['Entered stock', 'StockIn / Opening / Return', 'Added'],
+          ['Sold stock', 'Posted invoices', 'Subtracted'],
+          ['On-hold stock', 'Hold invoices', 'Subtracted'],
+          ['Available stock', 'Entered - Sold - Hold', 'Current'],
+        ],
+      ),
+    );
+  }
+}
+
+class PurchasesView extends StatelessWidget {
+  const PurchasesView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final user = _currentUser(context);
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    return AppPanel(
+      title: 'Purchase Management',
+      action: FilledButton.icon(onPressed: user.canManageOperations ? () => _openPurchaseDialog(context) : null, icon: const Icon(Icons.add), label: const Text('New PO')),
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('Order')),
+          DataColumn(label: Text('Supplier')),
+          DataColumn(label: Text('Total'), numeric: true),
+          DataColumn(label: Text('Status')),
+          DataColumn(label: Text('Actions')),
+        ],
+        rows: [
+          for (final order in store.purchases)
+            DataRow(cells: [
+              DataCell(Text(order.orderNo)),
+              DataCell(Text(order.supplier)),
+              DataCell(Text(money.format(order.total))),
+              DataCell(StatusPill(label: order.status)),
+              DataCell(Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(tooltip: 'Edit', onPressed: user.canManageOperations ? () => _openPurchaseDialog(context, order: order) : null, icon: const Icon(Icons.edit_outlined)),
+                  IconButton(tooltip: 'Receive', onPressed: user.canManageOperations && order.status != 'Received' ? () => store.receivePurchase(order) : null, icon: const Icon(Icons.download_done_outlined)),
+                ],
+              )),
+            ]),
+        ],
+      ),
+    );
+  }
+}
+
+enum PartyKind { customer, supplier }
+
+class PartiesView extends StatelessWidget {
+  const PartiesView({super.key, required this.kind});
+
+  final PartyKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final user = _currentUser(context);
+    final list = kind == PartyKind.customer ? store.customers : store.suppliers;
+    final title = kind == PartyKind.customer ? 'Customer CRM' : 'Supplier Ledger';
+    final button = kind == PartyKind.customer ? 'New customer' : 'New supplier';
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    return AppPanel(
+      title: title,
+      action: FilledButton.icon(onPressed: _canEditParty(user, kind) ? () => _openPartyDialog(context, kind: kind) : null, icon: const Icon(Icons.add), label: Text(button)),
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('Name')),
+          DataColumn(label: Text('Phone')),
+          DataColumn(label: Text('Email')),
+          DataColumn(label: Text('Balance'), numeric: true),
+          DataColumn(label: Text('Actions')),
+        ],
+        rows: [
+          for (final party in list)
+            DataRow(cells: [
+              DataCell(Text(party.name)),
+              DataCell(Text(party.phone)),
+              DataCell(Text(party.email.isEmpty ? '-' : party.email)),
+              DataCell(Text(money.format(party.balance))),
+              DataCell(Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(tooltip: 'Edit', onPressed: _canEditParty(user, kind) ? () => _openPartyDialog(context, kind: kind, party: party) : null, icon: const Icon(Icons.edit_outlined)),
+                  IconButton(tooltip: 'Delete', onPressed: user.isAdmin ? () => store.deleteParty(list, party.id) : null, icon: const Icon(Icons.delete_outline)),
+                ],
+              )),
+            ]),
+        ],
+      ),
+    );
+  }
+}
+
+class FinanceView extends StatelessWidget {
+  const FinanceView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    final totalExpense = store.expenses.fold(0.0, (sum, expense) => sum + expense.amount);
+    return ResponsiveColumns(
+      left: AppPanel(
+        title: 'Expenses',
+        action: FilledButton.icon(onPressed: () => _openExpenseDialog(context), icon: const Icon(Icons.add), label: const Text('New expense')),
+        child: DataTable(
+          columns: const [
+            DataColumn(label: Text('Title')),
+            DataColumn(label: Text('Category')),
+            DataColumn(label: Text('Amount'), numeric: true),
+            DataColumn(label: Text('Actions')),
+          ],
+          rows: [
+            for (final expense in store.expenses)
+              DataRow(cells: [
+                DataCell(Text(expense.title)),
+                DataCell(Text(expense.category)),
+                DataCell(Text(money.format(expense.amount))),
+                DataCell(IconButton(tooltip: 'Edit', onPressed: () => _openExpenseDialog(context, expense: expense), icon: const Icon(Icons.edit_outlined))),
+              ]),
+          ],
+        ),
+      ),
+      right: AppPanel(
+        title: 'Finance summary',
+        child: Column(
+          children: [
+            TotalRow(label: 'Sales', value: money.format(store.invoices.fold(0.0, (sum, invoice) => sum + invoice.total))),
+            TotalRow(label: 'Expenses', value: money.format(totalExpense)),
+            TotalRow(label: 'Receivables', value: money.format(store.pendingDues)),
+            const Divider(height: 28),
+            TotalRow(label: 'Cash received', value: money.format(store.invoices.fold(0.0, (sum, invoice) => sum + invoice.paid)), strong: true),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ReportsView extends StatelessWidget {
+  const ReportsView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final reports = const ['Sales', 'Purchases', 'Profit', 'Stock', 'Low stock', 'Expiry', 'Barcode', 'Tax', 'Customers', 'Suppliers', 'Inventory valuation'];
+    final selectedReport = ValueNotifier<String>('Sales');
+    return AppPanel(
+      title: 'Reports & analytics',
+      action: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(tooltip: 'Preview', onPressed: () => _showReportPreview(context, selectedReport.value), icon: const Icon(Icons.preview_outlined)),
+          IconButton(tooltip: 'PDF', onPressed: () => _exportReport(context, selectedReport.value, ReportExport.pdf), icon: const Icon(Icons.picture_as_pdf_outlined)),
+          IconButton(tooltip: 'Excel', onPressed: () => _exportReport(context, selectedReport.value, ReportExport.excel), icon: const Icon(Icons.table_view_outlined)),
+          IconButton(tooltip: 'Print', onPressed: () => _showMessage(context, 'Report sent to printer'), icon: const Icon(Icons.print_outlined)),
+        ],
+      ),
+      child: ValueListenableBuilder<String>(
+        valueListenable: selectedReport,
+        builder: (context, selected, _) {
+          final rows = _reportRows(StoreScope.of(context), selected);
+          return SizedBox(
+            width: 760,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    for (final report in reports)
+                      ChoiceChip(
+                        avatar: const Icon(Icons.analytics_outlined, size: 18),
+                        label: Text('$report report'),
+                        selected: selected == report,
+                        onSelected: (_) => selectedReport.value = report,
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Text('$selected preview', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 8),
+                _ReportTable(rows: rows),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class UsersView extends StatelessWidget {
+  const UsersView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    return AppPanel(
+      title: 'User & Role Management',
+      action: FilledButton.icon(onPressed: () => _openUserDialog(context), icon: const Icon(Icons.person_add_alt), label: const Text('New user')),
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('Name')),
+          DataColumn(label: Text('Email')),
+          DataColumn(label: Text('Role')),
+          DataColumn(label: Text('Status')),
+          DataColumn(label: Text('Actions')),
+        ],
+        rows: [
+          for (final user in store.users)
+            DataRow(cells: [
+              DataCell(Text(user.name)),
+              DataCell(Text(user.email)),
+              DataCell(Text(user.role)),
+              DataCell(StatusPill(label: user.active ? 'Active' : 'Disabled')),
+              DataCell(Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(tooltip: 'Edit', onPressed: () => _openUserDialog(context, user: user), icon: const Icon(Icons.edit_outlined)),
+                  IconButton(tooltip: 'Delete', onPressed: () => store.deleteUser(user.id), icon: const Icon(Icons.delete_outline)),
+                ],
+              )),
+            ]),
+        ],
+      ),
+    );
+  }
+}
+
+class ResponsiveColumns extends StatelessWidget {
+  const ResponsiveColumns({super.key, required this.left, required this.right});
+
+  final Widget left;
+  final Widget right;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final twoColumns = constraints.maxWidth >= 900;
+        return Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            SizedBox(width: twoColumns ? (constraints.maxWidth - 16) * .58 : constraints.maxWidth, child: left),
+            SizedBox(width: twoColumns ? (constraints.maxWidth - 16) * .42 : constraints.maxWidth, child: right),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class AppPanel extends StatelessWidget {
+  const AppPanel({super.key, required this.title, required this.child, this.action, this.horizontalScroll = true});
+
+  final String title;
+  final Widget child;
+  final Widget? action;
+  final bool horizontalScroll;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: Text(title, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800))),
+                ?action,
+              ],
+            ),
+            const SizedBox(height: 14),
+            if (horizontalScroll)
+              SingleChildScrollView(scrollDirection: Axis.horizontal, child: child)
+            else
+              child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class DataPanel extends StatelessWidget {
+  const DataPanel({super.key, required this.title, required this.rows});
+
+  final String title;
+  final List<List<String>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppPanel(
+      title: title,
+      child: SizedBox(
+        width: 520,
+        child: Column(
+          children: [
+            for (final row in rows)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(flex: 2, child: Text(row[0], overflow: TextOverflow.ellipsis)),
+                    Expanded(child: Text(row[1], textAlign: TextAlign.center, overflow: TextOverflow.ellipsis)),
+                    Expanded(child: Text(row[2], textAlign: TextAlign.end, overflow: TextOverflow.ellipsis)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReportTable extends StatelessWidget {
+  const _ReportTable({required this.rows});
+
+  final List<List<String>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    return DataTable(
+      columns: const [
+        DataColumn(label: Text('Name')),
+        DataColumn(label: Text('Quantity / Status')),
+        DataColumn(label: Text('Amount / Detail')),
+      ],
+      rows: [
+        for (final row in rows)
+          DataRow(cells: [
+            DataCell(Text(row[0])),
+            DataCell(Text(row[1])),
+            DataCell(Text(row[2])),
+          ]),
+      ],
+    );
+  }
+}
+
+class TotalRow extends StatelessWidget {
+  const TotalRow({super.key, required this.label, required this.value, this.strong = false});
+
+  final String label;
+  final String value;
+  final bool strong;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = strong ? Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800) : null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(children: [Expanded(child: Text(label, style: style)), Text(value, style: style)]),
+    );
+  }
+}
+
+class StatusPill extends StatelessWidget {
+  const StatusPill({super.key, required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (label) {
+      'Low' || 'Pending' || 'Disabled' => const Color(0xFFD97706),
+      'Received' || 'Active' || 'OK' || 'Paid' => const Color(0xFF0E7C66),
+      _ => Theme.of(context).colorScheme.primary,
+    };
+    return Chip(
+      visualDensity: VisualDensity.compact,
+      side: BorderSide(color: color.withValues(alpha: .28)),
+      backgroundColor: color.withValues(alpha: .10),
+      label: Text(label),
+    );
+  }
+}
+
+enum ReportExport { pdf, excel }
+
+AppUser _currentUser(BuildContext context) => UserScope.of(context);
+
+bool _canEditParty(AppUser user, PartyKind kind) {
+  return kind == PartyKind.customer ? user.canUsePos : user.canManageOperations;
+}
+
+List<List<String>> _reportRows(AppStore store, String report) {
+  final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+  return switch (report) {
+    'Sales' => [
+        for (final invoice in store.invoices) [invoice.number, invoice.customer, money.format(invoice.total)],
+      ],
+    'Purchases' => [
+        for (final order in store.purchases) [order.orderNo, order.status, money.format(order.total)],
+      ],
+    'Profit' => [
+        ['Total sales', '${store.invoices.length} invoices', money.format(store.invoices.fold(0.0, (sum, invoice) => sum + invoice.total))],
+        ['Total expenses', '${store.expenses.length} entries', money.format(store.expenses.fold(0.0, (sum, expense) => sum + expense.amount))],
+        ['Estimated margin', 'Sales - expenses', money.format(store.invoices.fold(0.0, (sum, invoice) => sum + invoice.total) - store.expenses.fold(0.0, (sum, expense) => sum + expense.amount))],
+      ],
+    'Stock' => [
+        for (final product in store.products) [product.name, product.stock.toStringAsFixed(0), product.category],
+      ],
+    'Low stock' => [
+        for (final product in store.products.where((item) => item.stock <= item.minStock)) [product.name, product.stock.toStringAsFixed(0), 'Min ${product.minStock.toStringAsFixed(0)}'],
+      ],
+    'Expiry' => const [
+        ['No expiry batches', '0', 'No batch expiry entered'],
+      ],
+    'Barcode' => [
+        for (final product in store.products) [product.name, product.sku, product.barcode],
+      ],
+    'Tax' => [
+        ['GST/VAT', '0%', money.format(0)],
+      ],
+    'Customers' => [
+        for (final party in store.customers) [party.name, party.phone, money.format(party.balance)],
+      ],
+    'Suppliers' => [
+        for (final party in store.suppliers) [party.name, party.phone, money.format(party.balance)],
+      ],
+    _ => [
+        for (final product in store.products) [product.name, product.stock.toStringAsFixed(0), money.format(product.stock * product.purchasePrice)],
+      ],
+  };
+}
+
+Future<void> _exportReport(BuildContext context, String report, ReportExport format) async {
+  final rows = _reportRows(StoreScope.of(context), report);
+  final safeName = report.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_|_$'), '');
+  final directory = Directory('reports');
+  if (!directory.existsSync()) {
+    directory.createSync(recursive: true);
+  }
+  final extension = format == ReportExport.excel ? 'csv' : 'html';
+  final file = File('${directory.path}/$safeName-report.$extension');
+  if (format == ReportExport.excel) {
+    final csvRows = [
+      'Name,Quantity / Status,Amount / Detail',
+      for (final row in rows) row.map(_csvCell).join(','),
+    ];
+    file.writeAsStringSync(csvRows.join('\n'));
+  } else {
+    final htmlRows = rows.map((row) => '<tr>${row.map((cell) => '<td>${_html(cell)}</td>').join()}</tr>').join();
+    file.writeAsStringSync('''
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>$report report</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background: #eef6f3; }
+  </style>
+</head>
+<body>
+  <h1>$report report</h1>
+  <table>
+    <thead><tr><th>Name</th><th>Quantity / Status</th><th>Amount / Detail</th></tr></thead>
+    <tbody>$htmlRows</tbody>
+  </table>
+</body>
+</html>
+''');
+  }
+  _showMessage(context, '${format == ReportExport.excel ? 'Excel CSV' : 'PDF-ready HTML'} exported: ${file.path}');
+}
+
+String _csvCell(String value) => '"${value.replaceAll('"', '""')}"';
+String _html(String value) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
+Future<void> _printBarcodeLabel(BuildContext context, Product product) async {
+  final directory = Directory('barcode-labels');
+  if (!directory.existsSync()) directory.createSync(recursive: true);
+  final safeName = product.sku.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_|_$'), '');
+  final file = File('${directory.path}/${safeName.isEmpty ? 'product' : safeName}-label.html');
+  final barcodeSvg = _code39Svg(product.barcode.isEmpty ? product.sku : product.barcode);
+  final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+  file.writeAsStringSync('''
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${_html(product.name)} barcode label</title>
+  <style>
+    @page { size: 50mm 30mm; margin: 2mm; }
+    body { margin: 0; font-family: Arial, sans-serif; }
+    .sheet { display: grid; grid-template-columns: repeat(2, 50mm); gap: 3mm; padding: 3mm; }
+    .label { width: 50mm; height: 30mm; border: 1px dashed #bbb; box-sizing: border-box; padding: 2mm; overflow: hidden; }
+    .name { font-size: 9px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sku { font-size: 8px; margin-top: 1mm; }
+    .barcode { margin-top: 1mm; }
+    .price { font-size: 10px; font-weight: 700; text-align: right; }
+    @media print { .label { border: 0; } }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    ${List.filled(10, '''
+    <div class="label">
+      <div class="name">${_html(product.name)}</div>
+      <div class="sku">SKU: ${_html(product.sku)}</div>
+      <div class="barcode">$barcodeSvg</div>
+      <div class="price">${_html(money.format(product.salePrice))}</div>
+    </div>
+    ''').join()}
+  </div>
+  <script>window.print();</script>
+</body>
+</html>
+''');
+  if (!context.mounted) return;
+  _showMessage(context, 'Barcode label exported: ${file.path}');
+}
+
+String _code39Svg(String value) {
+  const patterns = {
+    '0': 'nnnwwnwnn',
+    '1': 'wnnwnnnnw',
+    '2': 'nnwwnnnnw',
+    '3': 'wnwwnnnnn',
+    '4': 'nnnwwnnnw',
+    '5': 'wnnwwnnnn',
+    '6': 'nnwwwnnnn',
+    '7': 'nnnwnnwnw',
+    '8': 'wnnwnnwnn',
+    '9': 'nnwwnnwnn',
+    'A': 'wnnnnwnnw',
+    'B': 'nnwnnwnnw',
+    'C': 'wnwnnwnnn',
+    'D': 'nnnnwwnnw',
+    'E': 'wnnnwwnnn',
+    'F': 'nnwnwwnnn',
+    'G': 'nnnnnwwnw',
+    'H': 'wnnnnwwnn',
+    'I': 'nnwnnwwnn',
+    'J': 'nnnnwwwnn',
+    'K': 'wnnnnnnww',
+    'L': 'nnwnnnnww',
+    'M': 'wnwnnnnwn',
+    'N': 'nnnnwnnww',
+    'O': 'wnnnwnnwn',
+    'P': 'nnwnwnnwn',
+    'Q': 'nnnnnnwww',
+    'R': 'wnnnnnwwn',
+    'S': 'nnwnnnwwn',
+    'T': 'nnnnwnwwn',
+    'U': 'wwnnnnnnw',
+    'V': 'nwwnnnnnw',
+    'W': 'wwwnnnnnn',
+    'X': 'nwnnwnnnw',
+    'Y': 'wwnnwnnnn',
+    'Z': 'nwwnwnnnn',
+    '-': 'nwnnnnwnw',
+    '.': 'wwnnnnwnn',
+    ' ': 'nwwnnnwnn',
+    '*': 'nwnnwnwnn',
+  };
+  final encoded = '*${value.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9 .-]+'), '')}*';
+  const narrow = 1.2;
+  const wide = 3.0;
+  const height = 42.0;
+  var x = 0.0;
+  final bars = StringBuffer();
+  for (final char in encoded.characters) {
+    final pattern = patterns[char] ?? patterns['-']!;
+    for (var i = 0; i < pattern.length; i++) {
+      final width = pattern[i] == 'w' ? wide : narrow;
+      if (i.isEven) bars.write('<rect x="${x.toStringAsFixed(1)}" y="0" width="${width.toStringAsFixed(1)}" height="$height" />');
+      x += width;
+    }
+    x += narrow;
+  }
+  return '<svg width="180" height="48" viewBox="0 0 ${x.toStringAsFixed(1)} 48" xmlns="http://www.w3.org/2000/svg"><g fill="#000">$bars</g></svg>';
+}
+
+Future<void> _openProductDialog(BuildContext context, {Product? product}) async {
+  final store = StoreScope.of(context);
+  final name = TextEditingController(text: product?.name ?? '');
+  final sku = TextEditingController(text: product?.sku ?? '');
+  final barcode = TextEditingController(text: product?.barcode ?? '');
+  final category = TextEditingController(text: product?.category ?? 'General');
+  final salePrice = TextEditingController(text: (product?.salePrice ?? 0).toStringAsFixed(0));
+  final purchasePrice = TextEditingController(text: (product?.purchasePrice ?? 0).toStringAsFixed(0));
+  final stock = TextEditingController(text: (product?.stock ?? 0).toStringAsFixed(0));
+  final minStock = TextEditingController(text: (product?.minStock ?? 0).toStringAsFixed(0));
+  await _showFormDialog(
+    context,
+    title: product == null ? 'New product' : 'Edit product',
+    fields: [
+      TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+      TextField(controller: category, decoration: const InputDecoration(labelText: 'Category')),
+      StatefulBuilder(builder: (context, setDialogState) {
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: TextField(controller: sku, decoration: const InputDecoration(labelText: 'SKU'))),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Generate SKU',
+              onPressed: () => setDialogState(() => sku.text = _generateSku(name.text, category.text, product?.id ?? store._nextProductId)),
+              icon: const Icon(Icons.auto_awesome_outlined),
+            ),
+          ],
+        );
+      }),
+      StatefulBuilder(builder: (context, setDialogState) {
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: TextField(controller: barcode, decoration: const InputDecoration(labelText: 'Barcode'))),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Generate barcode',
+              onPressed: () => setDialogState(() => barcode.text = _generateBarcode(product?.id ?? store._nextProductId)),
+              icon: const Icon(Icons.qr_code_2_outlined),
+            ),
+          ],
+        );
+      }),
+      TextField(controller: salePrice, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Sale price')),
+      TextField(controller: purchasePrice, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Purchase price')),
+      TextField(controller: stock, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Stock')),
+      TextField(controller: minStock, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Min stock')),
+    ],
+    onSave: () {
+      store.upsertProduct(Product(
+        id: product?.id ?? 0,
+        name: name.text.trim(),
+        sku: sku.text.trim(),
+        barcode: barcode.text.trim(),
+        category: category.text.trim(),
+        salePrice: _num(salePrice),
+        purchasePrice: _num(purchasePrice),
+        stock: _num(stock),
+        minStock: _num(minStock),
+      ));
+    },
+  );
+}
+
+Future<void> _openPartyDialog(BuildContext context, {required PartyKind kind, Party? party}) async {
+  final store = StoreScope.of(context);
+  final name = TextEditingController(text: party?.name ?? '');
+  final phone = TextEditingController(text: party?.phone ?? '');
+  final email = TextEditingController(text: party?.email ?? '');
+  final balance = TextEditingController(text: (party?.balance ?? 0).toStringAsFixed(0));
+  await _showFormDialog(
+    context,
+    title: party == null ? 'New ${kind.name}' : 'Edit ${kind.name}',
+    fields: [
+      TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+      TextField(controller: phone, decoration: const InputDecoration(labelText: 'Phone')),
+      TextField(controller: email, decoration: const InputDecoration(labelText: 'Email')),
+      TextField(controller: balance, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Balance')),
+    ],
+    onSave: () {
+      final next = Party(id: party?.id ?? 0, name: name.text.trim(), phone: phone.text.trim(), email: email.text.trim(), balance: _num(balance));
+      kind == PartyKind.customer ? store.upsertCustomer(next) : store.upsertSupplier(next);
+    },
+  );
+}
+
+Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
+  final store = StoreScope.of(context);
+  final name = TextEditingController(text: user?.name ?? '');
+  final email = TextEditingController(text: user?.email ?? '');
+  final password = TextEditingController(text: user?.password ?? '');
+  String role = user?.role ?? 'Cashier';
+  bool active = user?.active ?? true;
+  await _showFormDialog(
+    context,
+    title: user == null ? 'New user' : 'Edit user',
+    fields: [
+      TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+      TextField(controller: email, decoration: const InputDecoration(labelText: 'Email')),
+      TextField(
+        controller: password,
+        obscureText: true,
+        decoration: InputDecoration(
+          labelText: user == null ? 'Password' : 'Reset password',
+          helperText: user == null ? 'Leave blank to use role default password' : 'Leave blank to keep current password',
+        ),
+      ),
+      StatefulBuilder(builder: (context, setDialogState) {
+        return Column(
+          children: [
+            DropdownButtonFormField<String>(
+              initialValue: role,
+              decoration: const InputDecoration(labelText: 'Role'),
+              items: const ['Admin', 'Manager', 'Cashier'].map((item) => DropdownMenuItem(value: item, child: Text(item))).toList(),
+              onChanged: (value) => setDialogState(() => role = value ?? role),
+            ),
+            SwitchListTile(value: active, onChanged: (value) => setDialogState(() => active = value), title: const Text('Active')),
+          ],
+        );
+      }),
+    ],
+    onSave: () => store.upsertUser(AppUser(id: user?.id ?? 0, name: name.text.trim(), email: email.text.trim(), role: role, active: active, password: password.text.trim())),
+  );
+}
+
+Future<void> _openChangePasswordDialog(BuildContext context, AppUser user) async {
+  final store = StoreScope.of(context);
+  final currentPassword = TextEditingController();
+  final newPassword = TextEditingController();
+  final confirmPassword = TextEditingController();
+  await _showFormDialog(
+    context,
+    title: 'Change password',
+    fields: [
+      TextField(controller: currentPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Current password')),
+      TextField(controller: newPassword, obscureText: true, decoration: const InputDecoration(labelText: 'New password')),
+      TextField(controller: confirmPassword, obscureText: true, decoration: const InputDecoration(labelText: 'Confirm password')),
+    ],
+    onSave: () {
+      if (newPassword.text != confirmPassword.text) {
+        _showMessage(context, 'New password and confirmation do not match');
+        return;
+      }
+      unawaited(store.changeOwnPassword(user, currentPassword.text, newPassword.text).then((changed) {
+        if (!context.mounted) return;
+        _showMessage(context, changed ? 'Password changed' : store.syncStatus);
+      }));
+    },
+  );
+}
+
+Future<void> _openPurchaseDialog(BuildContext context, {PurchaseOrder? order}) async {
+  final store = StoreScope.of(context);
+  final orderNo = TextEditingController(text: order?.orderNo ?? 'PO-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}');
+  final total = TextEditingController(text: (order?.total ?? 0).toStringAsFixed(0));
+  String supplier = order?.supplier ?? store.suppliers.first.name;
+  await _showFormDialog(
+    context,
+    title: order == null ? 'New purchase order' : 'Edit purchase order',
+    fields: [
+      StatefulBuilder(builder: (context, setDialogState) {
+        return DropdownButtonFormField<String>(
+          initialValue: supplier,
+          decoration: const InputDecoration(labelText: 'Supplier'),
+          items: [for (final party in store.suppliers) DropdownMenuItem(value: party.name, child: Text(party.name))],
+          onChanged: (value) => setDialogState(() => supplier = value ?? supplier),
+        );
+      }),
+      TextField(controller: orderNo, decoration: const InputDecoration(labelText: 'Order no')),
+      TextField(controller: total, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Total')),
+    ],
+    onSave: () => store.upsertPurchase(PurchaseOrder(id: order?.id ?? 0, supplier: supplier, orderNo: orderNo.text.trim(), status: order?.status ?? 'Pending', total: _num(total))),
+  );
+}
+
+Future<void> _openExpenseDialog(BuildContext context, {Expense? expense}) async {
+  final store = StoreScope.of(context);
+  final title = TextEditingController(text: expense?.title ?? '');
+  final category = TextEditingController(text: expense?.category ?? 'General');
+  final amount = TextEditingController(text: (expense?.amount ?? 0).toStringAsFixed(0));
+  await _showFormDialog(
+    context,
+    title: expense == null ? 'New expense' : 'Edit expense',
+    fields: [
+      TextField(controller: title, decoration: const InputDecoration(labelText: 'Title')),
+      TextField(controller: category, decoration: const InputDecoration(labelText: 'Category')),
+      TextField(controller: amount, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Amount')),
+    ],
+    onSave: () => store.upsertExpense(Expense(id: expense?.id ?? 0, title: title.text.trim(), category: category.text.trim(), amount: _num(amount))),
+  );
+}
+
+Future<void> _openStockDialog(BuildContext context) async {
+  final store = StoreScope.of(context);
+  String product = store.products.first.name;
+  String type = 'In';
+  final quantity = TextEditingController(text: '1');
+  final notes = TextEditingController(text: 'Manual adjustment');
+  await _showFormDialog(
+    context,
+    title: 'Stock movement',
+    fields: [
+      StatefulBuilder(builder: (context, setDialogState) {
+        return Column(
+          children: [
+            DropdownButtonFormField<String>(
+              initialValue: product,
+              decoration: const InputDecoration(labelText: 'Product'),
+              items: [for (final item in store.products) DropdownMenuItem(value: item.name, child: Text(item.name))],
+              onChanged: (value) => setDialogState(() => product = value ?? product),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'In', icon: Icon(Icons.add), label: Text('In')),
+                ButtonSegment(value: 'Out', icon: Icon(Icons.remove), label: Text('Out')),
+              ],
+              selected: {type},
+              onSelectionChanged: (value) => setDialogState(() => type = value.first),
+            ),
+          ],
+        );
+      }),
+      TextField(controller: quantity, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity')),
+      TextField(controller: notes, decoration: const InputDecoration(labelText: 'Notes')),
+    ],
+    onSave: () => store.addStockMovement(StockMovement(id: 0, product: product, type: type, quantity: _num(quantity), notes: notes.text.trim())),
+  );
+}
+
+Future<void> _repairStock(BuildContext context) async {
+  final repaired = await StoreScope.of(context).repairOrphanInvoiceStock();
+  if (!context.mounted) return;
+  _showMessage(context, repaired == 0 ? 'No deleted-invoice stock movements found' : 'Repaired $repaired stock movement(s)');
+}
+
+Future<void> _showReportPreview(BuildContext context, String report) async {
+  final rows = _reportRows(StoreScope.of(context), report);
+  await showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('$report report'),
+      content: SizedBox(
+        width: 720,
+        child: SingleChildScrollView(
+          child: _ReportTable(rows: rows),
+        ),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+    ),
+  );
+}
+
+Future<void> _showFormDialog(BuildContext context, {required String title, required List<Widget> fields, required VoidCallback onSave}) async {
+  await showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final field in fields) Padding(padding: const EdgeInsets.only(bottom: 10), child: field),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            onSave();
+            Navigator.pop(context);
+            _showMessage(context, '$title saved');
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+double _num(TextEditingController controller) => double.tryParse(controller.text.trim()) ?? 0;
+
+void _showMessage(BuildContext context, String message) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+}

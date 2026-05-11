@@ -1,0 +1,31 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "YourStrong!Passw0rd"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+
+  api:
+    build: ./backend
+    depends_on:
+      - sqlserver
+    environment:
+      NODE_ENV: production
+      PORT: 4100
+      SQL_SERVER: sqlserver
+      SQL_PORT: 1433
+      SQL_DATABASE: PosInvMssql
+      SQL_USER: sa
+      SQL_PASSWORD: YourStrong!Passw0rd
+      JWT_SECRET: change-this-in-production
+    ports:
+      - "4100:4100"
+
+volumes:
+  sqlserver-data:
+
