@@ -621,14 +621,18 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Invoice postInvoice({required String customer, required List<InvoiceLine> lines, required String method, required double paid}) {
-    final total = lines.fold(0.0, (sum, line) => sum + line.total);
+  Invoice postInvoice({required String customer, required List<InvoiceLine> lines, required String method, required double paid, double tendered = 0, double discountAmount = 0}) {
+    final subtotal = lines.fold(0.0, (sum, line) => sum + line.total);
+    final discount = discountAmount.clamp(0, subtotal).toDouble();
+    final total = (subtotal - discount).clamp(0, 999999999).toDouble();
     final invoice = Invoice(
       id: _nextInvoiceId,
       number: 'INV-$_nextInvoiceId',
       customer: customer,
       total: total,
       paid: paid,
+      tendered: tendered,
+      discountAmount: discount,
       method: method,
       createdAt: DateTime.now(),
     );
@@ -771,7 +775,7 @@ class AppStore extends ChangeNotifier {
         'branchId': 1,
         'warehouseId': 1,
         'customerId': _customerIdByName(invoice.customer),
-        'discountAmount': 0,
+        'discountAmount': invoice.discountAmount,
         'payments': invoice.paid > 0 ? [{'method': invoice.method, 'amount': invoice.paid}] : [],
         'items': [
           for (final line in lines) {'productId': line.product.id, 'quantity': line.quantity, 'unitPrice': line.product.salePrice, 'discountAmount': 0, 'taxAmount': 0}
@@ -923,6 +927,8 @@ Invoice _invoiceFromJson(Map<String, dynamic> json) {
     customer: _string(json, 'customer'),
     total: _double(json, 'total'),
     paid: _double(json, 'paid'),
+    tendered: _double(json, 'tendered'),
+    discountAmount: _double(json, 'discountAmount'),
     method: _string(json, 'method'),
     createdAt: DateTime.tryParse(_string(json, 'createdAt')) ?? DateTime.now(),
   );
@@ -934,6 +940,8 @@ Map<String, dynamic> _invoiceToJson(Invoice invoice) => {
       'customer': invoice.customer,
       'total': invoice.total,
       'paid': invoice.paid,
+      'tendered': invoice.tendered,
+      'discountAmount': invoice.discountAmount,
       'method': invoice.method,
       'createdAt': invoice.createdAt.toIso8601String(),
     };
@@ -1007,6 +1015,8 @@ Invoice _apiInvoiceFromJson(Map<String, dynamic> json) {
     customer: _string(json, 'CustomerName', 'Walk-in Customer'),
     total: _double(json, 'Total'),
     paid: _double(json, 'PaidAmount'),
+    tendered: _double(json, 'TenderedAmount', _double(json, 'PaidAmount')),
+    discountAmount: _double(json, 'DiscountAmount'),
     method: 'SQL',
     createdAt: DateTime.tryParse(_string(json, 'CreatedAt')) ?? DateTime.now(),
   );
@@ -1224,24 +1234,29 @@ class SyncJob {
 }
 
 class Invoice {
-  const Invoice({required this.id, required this.number, required this.customer, required this.total, required this.paid, required this.method, required this.createdAt});
+  const Invoice({required this.id, required this.number, required this.customer, required this.total, required this.paid, required this.method, required this.createdAt, this.tendered = 0, this.discountAmount = 0});
 
   final int id;
   final String number;
   final String customer;
   final double total;
   final double paid;
+  final double tendered;
+  final double discountAmount;
   final String method;
   final DateTime createdAt;
   double get due => total - paid;
+  double get changeDue => (tendered - total).clamp(0, 999999999).toDouble();
 
-  Invoice copyWith({int? id, String? number, String? customer, double? total, double? paid, String? method, DateTime? createdAt}) {
+  Invoice copyWith({int? id, String? number, String? customer, double? total, double? paid, double? tendered, double? discountAmount, String? method, DateTime? createdAt}) {
     return Invoice(
       id: id ?? this.id,
       number: number ?? this.number,
       customer: customer ?? this.customer,
       total: total ?? this.total,
       paid: paid ?? this.paid,
+      tendered: tendered ?? this.tendered,
+      discountAmount: discountAmount ?? this.discountAmount,
       method: method ?? this.method,
       createdAt: createdAt ?? this.createdAt,
     );
@@ -1578,13 +1593,19 @@ class PosView extends StatefulWidget {
 
 class _PosViewState extends State<PosView> {
   final search = TextEditingController();
+  final amountPaid = TextEditingController();
+  final searchFocus = FocusNode();
   final List<InvoiceLine> cart = [];
   String paymentMethod = 'Cash';
   String customer = 'Walk-in Customer';
+  double discountAmount = 0;
+  int selectedLineIndex = 0;
 
   @override
   void dispose() {
     search.dispose();
+    amountPaid.dispose();
+    searchFocus.dispose();
     super.dispose();
   }
 
@@ -1592,117 +1613,365 @@ class _PosViewState extends State<PosView> {
   Widget build(BuildContext context) {
     final store = StoreScope.of(context);
     final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
-    final total = cart.fold(0.0, (sum, line) => sum + line.total);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 980;
-        return Wrap(
-          spacing: 16,
-          runSpacing: 16,
-          children: [
-            SizedBox(
-              width: wide ? (constraints.maxWidth - 16) * .62 : constraints.maxWidth,
-              child: AppPanel(
-                title: 'Sell items',
-                horizontalScroll: false,
-                action: IconButton(
-                  tooltip: 'Clear bill',
-                  onPressed: cart.isEmpty ? null : () => setState(cart.clear),
-                  icon: const Icon(Icons.delete_sweep_outlined),
-                ),
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: search,
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.qr_code_scanner_outlined),
-                        suffixIcon: IconButton(onPressed: () => _addBySearch(store), icon: const Icon(Icons.add_shopping_cart_outlined)),
-                        labelText: 'Scan barcode, SKU, or product name',
-                        border: const OutlineInputBorder(),
-                      ),
-                      onSubmitted: (_) => _addBySearch(store),
+    final subtotal = cart.fold(0.0, (sum, line) => sum + line.total);
+    final discount = discountAmount.clamp(0, subtotal).toDouble();
+    final total = (subtotal - discount).clamp(0, 999999999).toDouble();
+    final paidInput = _num(amountPaid);
+    final tendered = paymentMethod == 'Credit' ? 0.0 : (paidInput <= 0 ? total : paidInput);
+    final changeDue = paymentMethod == 'Credit' ? 0.0 : (tendered - total).clamp(0, 999999999).toDouble();
+    final balanceDue = paymentMethod == 'Credit' ? total : (total - tendered).clamp(0, 999999999).toDouble();
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.f2): () => unawaited(_openItemPicker(store)),
+        const SingleActivator(LogicalKeyboardKey.f3): () => _addBySearch(store),
+        const SingleActivator(LogicalKeyboardKey.f4): () => unawaited(_openDiscountDialog(subtotal)),
+        const SingleActivator(LogicalKeyboardKey.f6): () => _changeSelectedQuantity(-1),
+        const SingleActivator(LogicalKeyboardKey.f7): () => _changeSelectedQuantity(1),
+        const SingleActivator(LogicalKeyboardKey.f8): () {
+          if (cart.isNotEmpty) _postInvoice(store, total, tendered);
+        },
+        const SingleActivator(LogicalKeyboardKey.f9): () {
+          if (cart.isNotEmpty) _postInvoice(store, total, tendered, printAfterPost: true);
+        },
+        const SingleActivator(LogicalKeyboardKey.delete): _removeSelectedLine,
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          search.clear();
+          _focusSearch();
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 980;
+            return Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: [
+                SizedBox(
+                  width: wide ? (constraints.maxWidth - 16) * .62 : constraints.maxWidth,
+                  child: AppPanel(
+                    title: 'Sell items',
+                    horizontalScroll: false,
+                    action: IconButton(
+                      tooltip: 'Clear bill',
+                      onPressed: cart.isEmpty ? null : _clearCart,
+                      icon: const Icon(Icons.delete_sweep_outlined),
                     ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
+                    child: Column(
                       children: [
-                        for (final product in store.products)
-                          ActionChip(
-                            avatar: const Icon(Icons.add, size: 18),
-                            label: Text(product.name),
-                            onPressed: product.stock <= 0 ? null : () => _addProduct(product),
+                        TextField(
+                          controller: search,
+                          focusNode: searchFocus,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.qr_code_scanner_outlined),
+                            suffixIcon: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(tooltip: 'Pick item (F2)', onPressed: () => unawaited(_openItemPicker(store)), icon: const Icon(Icons.list_alt_outlined)),
+                                IconButton(tooltip: 'Add item (F3)', onPressed: () => _addBySearch(store), icon: const Icon(Icons.add_shopping_cart_outlined)),
+                              ],
+                            ),
+                            labelText: 'Scan barcode, SKU, or product name',
+                            border: const OutlineInputBorder(),
                           ),
+                          onSubmitted: (_) => _addBySearch(store),
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final product in store.products)
+                              ActionChip(
+                                avatar: const Icon(Icons.add, size: 18),
+                                label: Text(product.name),
+                                onPressed: product.stock <= 0 ? null : () => _addProduct(product),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        DataTable(
+                          columns: const [
+                            DataColumn(label: Text('Item')),
+                            DataColumn(label: Text('Qty'), numeric: true),
+                            DataColumn(label: Text('Total'), numeric: true),
+                            DataColumn(label: Text('')),
+                          ],
+                          rows: [
+                            for (var index = 0; index < cart.length; index++)
+                              _cartRow(index, cart[index], money),
+                          ],
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    DataTable(
-                      columns: const [
-                        DataColumn(label: Text('Item')),
-                        DataColumn(label: Text('Qty'), numeric: true),
-                        DataColumn(label: Text('Total'), numeric: true),
-                        DataColumn(label: Text('')),
-                      ],
-                      rows: [
-                        for (final line in cart)
-                          DataRow(cells: [
-                            DataCell(Text(line.product.name)),
-                            DataCell(Text(line.quantity.toStringAsFixed(0))),
-                            DataCell(Text(money.format(line.total))),
-                            DataCell(IconButton(onPressed: () => setState(() => cart.remove(line)), icon: const Icon(Icons.close))),
-                          ]),
-                      ],
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-            SizedBox(
-              width: wide ? (constraints.maxWidth - 16) * .38 : constraints.maxWidth,
-              child: AppPanel(
-                title: 'Payment',
-                horizontalScroll: false,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    DropdownButtonFormField<String>(
-                      initialValue: customer,
-                      decoration: const InputDecoration(labelText: 'Customer', border: OutlineInputBorder()),
-                      items: [for (final party in store.customers) DropdownMenuItem(value: party.name, child: Text(party.name))],
-                      onChanged: (value) => setState(() => customer = value ?? customer),
-                    ),
-                    const SizedBox(height: 12),
-                    TotalRow(label: 'Subtotal', value: money.format(total)),
-                    const TotalRow(label: 'Discount', value: 'PKR 0'),
-                    const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
-                    const Divider(height: 28),
-                    TotalRow(label: 'Grand total', value: money.format(total), strong: true),
-                    const SizedBox(height: 16),
-                    SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: 'Cash', icon: Icon(Icons.payments_outlined), label: Text('Cash')),
-                        ButtonSegment(value: 'Card', icon: Icon(Icons.credit_card), label: Text('Card')),
-                        ButtonSegment(value: 'Credit', icon: Icon(Icons.schedule_outlined), label: Text('Credit')),
+                SizedBox(
+                  width: wide ? (constraints.maxWidth - 16) * .38 : constraints.maxWidth,
+                  child: AppPanel(
+                    title: 'Payment',
+                    horizontalScroll: false,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        DropdownButtonFormField<String>(
+                          initialValue: customer,
+                          decoration: const InputDecoration(labelText: 'Customer', border: OutlineInputBorder()),
+                          items: [for (final party in store.customers) DropdownMenuItem(value: party.name, child: Text(party.name))],
+                          onChanged: (value) => setState(() => customer = value ?? customer),
+                        ),
+                        const SizedBox(height: 12),
+                        TotalRow(label: 'Subtotal', value: money.format(subtotal)),
+                        TotalRow(
+                          label: 'Discount (F4)',
+                          value: money.format(discount),
+                          action: IconButton(
+                            tooltip: 'Set discount (F4)',
+                            onPressed: cart.isEmpty ? null : () => unawaited(_openDiscountDialog(subtotal)),
+                            icon: const Icon(Icons.percent_outlined),
+                          ),
+                        ),
+                        const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
+                        const Divider(height: 28),
+                        TotalRow(label: 'Grand total', value: money.format(total), strong: true),
+                        const SizedBox(height: 16),
+                        SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(value: 'Cash', icon: Icon(Icons.payments_outlined), label: Text('Cash')),
+                            ButtonSegment(value: 'Card', icon: Icon(Icons.credit_card), label: Text('Card')),
+                            ButtonSegment(value: 'Credit', icon: Icon(Icons.schedule_outlined), label: Text('Credit')),
+                          ],
+                          selected: {paymentMethod},
+                          onSelectionChanged: (value) {
+                            setState(() {
+                              paymentMethod = value.first;
+                              if (paymentMethod == 'Credit') amountPaid.clear();
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: amountPaid,
+                          enabled: paymentMethod != 'Credit',
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.payments_outlined),
+                            labelText: paymentMethod == 'Cash' ? 'Cash received from customer' : 'Amount paid by customer',
+                            hintText: total > 0 ? total.toStringAsFixed(0) : '0',
+                            border: const OutlineInputBorder(),
+                          ),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                        const SizedBox(height: 8),
+                        TotalRow(label: 'Paid amount', value: money.format(tendered)),
+                        TotalRow(label: paymentMethod == 'Credit' ? 'Balance due' : 'Return change', value: money.format(paymentMethod == 'Credit' ? balanceDue : changeDue), strong: changeDue > 0 || balanceDue > 0),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: cart.isEmpty ? null : () => _postInvoice(store, total, tendered),
+                          icon: const Icon(Icons.receipt_long_outlined),
+                          label: const Text('Post invoice (F8)'),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: cart.isEmpty ? null : () => _postInvoice(store, total, tendered, printAfterPost: true),
+                          icon: const Icon(Icons.print_outlined),
+                          label: const Text('Post & print (F9)'),
+                        ),
                       ],
-                      selected: {paymentMethod},
-                      onSelectionChanged: (value) => setState(() => paymentMethod = value.first),
                     ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: cart.isEmpty ? null : () => _postInvoice(store, total),
-                      icon: const Icon(Icons.receipt_long_outlined),
-                      label: const Text('Post invoice'),
-                    ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(onPressed: cart.isEmpty ? null : () => _showMessage(context, 'Print job prepared'), icon: const Icon(Icons.print_outlined), label: const Text('Thermal / A4 print')),
-                  ],
+                  ),
                 ),
-              ),
-            ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  DataRow _cartRow(int index, InvoiceLine line, intl.NumberFormat money) {
+    return DataRow(
+      selected: selectedLineIndex == index,
+      onSelectChanged: (_) => setState(() => selectedLineIndex = index),
+      cells: [
+        DataCell(Text(line.product.name)),
+        DataCell(
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(tooltip: 'Qty - (F6)', onPressed: () => _changeLineQuantity(index, -1), icon: const Icon(Icons.remove_circle_outline)),
+              SizedBox(width: 36, child: Text(line.quantity.toStringAsFixed(0), textAlign: TextAlign.center)),
+              IconButton(tooltip: 'Qty + (F7)', onPressed: () => _changeLineQuantity(index, 1), icon: const Icon(Icons.add_circle_outline)),
+            ],
+          ),
+        ),
+        DataCell(Text(money.format(line.total))),
+        DataCell(IconButton(tooltip: 'Remove item (Delete)', onPressed: () => _removeLine(index), icon: const Icon(Icons.close))),
+      ],
+    );
+  }
+
+  void _focusSearch() {
+    searchFocus.requestFocus();
+    search.selection = TextSelection(baseOffset: 0, extentOffset: search.text.length);
+  }
+
+  void _clearCart() {
+    setState(() {
+      cart.clear();
+      amountPaid.clear();
+      discountAmount = 0;
+      selectedLineIndex = 0;
+    });
+    _focusSearch();
+  }
+
+  void _changeSelectedQuantity(double delta) {
+    if (cart.isEmpty) return;
+    _changeLineQuantity(selectedLineIndex.clamp(0, cart.length - 1), delta);
+  }
+
+  void _changeLineQuantity(int index, double delta) {
+    if (index < 0 || index >= cart.length) return;
+    final line = cart[index];
+    final nextQuantity = line.quantity + delta;
+    if (nextQuantity < 1) {
+      _removeLine(index);
+      return;
+    }
+    if (nextQuantity > line.product.stock) {
+      _showMessage(context, 'Only ${line.product.stock.toStringAsFixed(0)} in stock');
+      return;
+    }
+    setState(() {
+      selectedLineIndex = index;
+      cart[index] = InvoiceLine(product: line.product, quantity: nextQuantity);
+    });
+  }
+
+  void _removeSelectedLine() {
+    if (cart.isEmpty) return;
+    _removeLine(selectedLineIndex.clamp(0, cart.length - 1));
+  }
+
+  void _removeLine(int index) {
+    if (index < 0 || index >= cart.length) return;
+    setState(() {
+      cart.removeAt(index);
+      if (cart.isEmpty) {
+        selectedLineIndex = 0;
+        discountAmount = 0;
+      } else {
+        selectedLineIndex = selectedLineIndex.clamp(0, cart.length - 1);
+      }
+    });
+  }
+
+  Future<void> _openDiscountDialog(double subtotal) async {
+    if (cart.isEmpty) return;
+    final controller = TextEditingController(text: discountAmount.toStringAsFixed(0));
+    final value = await showDialog<double>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Set discount'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(labelText: 'Discount amount', helperText: 'Maximum ${intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0).format(subtotal)}'),
+            onSubmitted: (_) => Navigator.pop(dialogContext, double.tryParse(controller.text.trim()) ?? 0),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, double.tryParse(controller.text.trim()) ?? 0), child: const Text('Apply')),
           ],
         );
       },
     );
+    controller.dispose();
+    if (value == null || !mounted) return;
+    setState(() => discountAmount = value.clamp(0, subtotal).toDouble());
+  }
+
+  Future<void> _openItemPicker(AppStore store) async {
+    final filter = TextEditingController(text: search.text.trim());
+    final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+    Product? selected;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final term = filter.text.trim().toLowerCase();
+            final products = store.products.where((product) {
+              if (product.stock <= 0) return false;
+              if (term.isEmpty) return true;
+              return product.name.toLowerCase().contains(term) || product.sku.toLowerCase().contains(term) || product.barcode.toLowerCase().contains(term);
+            }).toList()
+              ..sort((a, b) => a.name.compareTo(b.name));
+            return AlertDialog(
+              title: const Text('Select item'),
+              content: SizedBox(
+                width: 620,
+                height: 520,
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: filter,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        labelText: 'Search by name, SKU, or barcode',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                      onSubmitted: (_) {
+                        if (products.isNotEmpty) {
+                          selected = products.first;
+                          Navigator.pop(dialogContext);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: products.isEmpty
+                          ? const Center(child: Text('No available item found'))
+                          : ListView.separated(
+                              itemCount: products.length,
+                              separatorBuilder: (context, index) => const Divider(height: 1),
+                              itemBuilder: (context, index) {
+                                final product = products[index];
+                                return ListTile(
+                                  leading: const Icon(Icons.inventory_2_outlined),
+                                  title: Text(product.name),
+                                  subtitle: Text('${product.sku}  |  Stock ${product.stock.toStringAsFixed(0)}  |  ${product.category}'),
+                                  trailing: Text(money.format(product.salePrice)),
+                                  onTap: () {
+                                    selected = product;
+                                    Navigator.pop(dialogContext);
+                                  },
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              ],
+            );
+          },
+        );
+      },
+    );
+    filter.dispose();
+    if (selected == null || !mounted) return;
+    _addProduct(selected!);
+    search.clear();
+    _focusSearch();
   }
 
   void _addBySearch(AppStore store) {
@@ -1720,20 +1989,42 @@ class _PosViewState extends State<PosView> {
   }
 
   void _addProduct(Product product) {
+    if (product.stock <= 0) {
+      _showMessage(context, 'Item is out of stock');
+      return;
+    }
     final index = cart.indexWhere((line) => line.product.id == product.id);
+    if (index != -1 && cart[index].quantity + 1 > product.stock) {
+      setState(() => selectedLineIndex = index);
+      _showMessage(context, 'Only ${product.stock.toStringAsFixed(0)} in stock');
+      return;
+    }
     setState(() {
       if (index == -1) {
         cart.add(InvoiceLine(product: product, quantity: 1));
+        selectedLineIndex = cart.length - 1;
       } else {
         cart[index] = InvoiceLine(product: product, quantity: cart[index].quantity + 1);
+        selectedLineIndex = index;
       }
     });
   }
 
-  void _postInvoice(AppStore store, double total) {
-    final invoice = store.postInvoice(customer: customer, lines: List.of(cart), method: paymentMethod, paid: paymentMethod == 'Credit' ? 0 : total);
-    setState(cart.clear);
-    _showMessage(context, 'Invoice ${invoice.number} posted');
+  void _postInvoice(AppStore store, double total, double tendered, {bool printAfterPost = false}) {
+    final lines = List<InvoiceLine>.of(cart);
+    final paid = paymentMethod == 'Credit' ? 0.0 : tendered.clamp(0, total).toDouble();
+    final invoice = store.postInvoice(customer: customer, lines: lines, method: paymentMethod, paid: paid, tendered: paymentMethod == 'Credit' ? 0 : tendered, discountAmount: discountAmount);
+    setState(() {
+      cart.clear();
+      amountPaid.clear();
+      discountAmount = 0;
+      selectedLineIndex = 0;
+    });
+    if (printAfterPost) {
+      unawaited(_exportInvoice(context, invoice, lines, printAfterExport: true));
+    } else {
+      _showMessage(context, 'Invoice ${invoice.number} posted');
+    }
   }
 }
 
@@ -1979,7 +2270,7 @@ class ReportsView extends StatelessWidget {
           IconButton(tooltip: 'Preview', onPressed: () => _showReportPreview(context, selectedReport.value), icon: const Icon(Icons.preview_outlined)),
           IconButton(tooltip: 'PDF', onPressed: () => _exportReport(context, selectedReport.value, ReportExport.pdf), icon: const Icon(Icons.picture_as_pdf_outlined)),
           IconButton(tooltip: 'Excel', onPressed: () => _exportReport(context, selectedReport.value, ReportExport.excel), icon: const Icon(Icons.table_view_outlined)),
-          IconButton(tooltip: 'Print', onPressed: () => _showMessage(context, 'Report sent to printer'), icon: const Icon(Icons.print_outlined)),
+          IconButton(tooltip: 'Print', onPressed: () => _printReport(context, selectedReport.value), icon: const Icon(Icons.print_outlined)),
         ],
       ),
       child: ValueListenableBuilder<String>(
@@ -2171,18 +2462,19 @@ class _ReportTable extends StatelessWidget {
 }
 
 class TotalRow extends StatelessWidget {
-  const TotalRow({super.key, required this.label, required this.value, this.strong = false});
+  const TotalRow({super.key, required this.label, required this.value, this.strong = false, this.action});
 
   final String label;
   final String value;
   final bool strong;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
     final style = strong ? Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800) : null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(children: [Expanded(child: Text(label, style: style)), Text(value, style: style)]),
+      child: Row(children: [Expanded(child: Text(label, style: style)), Text(value, style: style), ?action]),
     );
   }
 }
@@ -2259,12 +2551,9 @@ List<List<String>> _reportRows(AppStore store, String report) {
 
 Future<void> _exportReport(BuildContext context, String report, ReportExport format) async {
   final rows = _reportRows(StoreScope.of(context), report);
-  final safeName = report.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_|_$'), '');
-  final directory = Directory('reports');
-  if (!directory.existsSync()) {
-    directory.createSync(recursive: true);
-  }
-  final extension = format == ReportExport.excel ? 'csv' : 'html';
+  final safeName = _safeFileName(report, fallback: 'report');
+  final directory = _ensureDirectory('reports');
+  final extension = format == ReportExport.excel ? 'csv' : 'pdf';
   final file = File('${directory.path}/$safeName-report.$extension');
   if (format == ReportExport.excel) {
     final csvRows = [
@@ -2272,9 +2561,33 @@ Future<void> _exportReport(BuildContext context, String report, ReportExport for
       for (final row in rows) row.map(_csvCell).join(','),
     ];
     file.writeAsStringSync(csvRows.join('\n'));
+    await _openFile(file);
   } else {
-    final htmlRows = rows.map((row) => '<tr>${row.map((cell) => '<td>${_html(cell)}</td>').join()}</tr>').join();
-    file.writeAsStringSync('''
+    _writeSimplePdf(
+      file: file,
+      title: '$report report',
+      headings: const ['Name', 'Quantity / Status', 'Amount / Detail'],
+      rows: rows,
+    );
+    await _openFile(file);
+  }
+  if (!context.mounted) return;
+  _showMessage(context, '${format == ReportExport.excel ? 'Excel CSV' : 'PDF'} exported: ${file.path}');
+}
+
+Future<void> _printReport(BuildContext context, String report) async {
+  final rows = _reportRows(StoreScope.of(context), report);
+  final directory = _ensureDirectory('reports');
+  final file = File('${directory.path}/${_safeFileName(report, fallback: 'report')}-print.html');
+  file.writeAsStringSync(_reportHtml(report, rows, autoPrint: true));
+  await _openFile(file);
+  if (!context.mounted) return;
+  _showMessage(context, 'Printable report opened: ${file.path}');
+}
+
+String _reportHtml(String report, List<List<String>> rows, {required bool autoPrint}) {
+  final htmlRows = rows.map((row) => '<tr>${row.map((cell) => '<td>${_html(cell)}</td>').join()}</tr>').join();
+  return '''
 <!doctype html>
 <html>
 <head>
@@ -2293,20 +2606,198 @@ Future<void> _exportReport(BuildContext context, String report, ReportExport for
     <thead><tr><th>Name</th><th>Quantity / Status</th><th>Amount / Detail</th></tr></thead>
     <tbody>$htmlRows</tbody>
   </table>
+  ${autoPrint ? '<script>window.addEventListener("load", () => window.print());</script>' : ''}
 </body>
 </html>
-''');
-  }
-  _showMessage(context, '${format == ReportExport.excel ? 'Excel CSV' : 'PDF-ready HTML'} exported: ${file.path}');
+''';
 }
 
 String _csvCell(String value) => '"${value.replaceAll('"', '""')}"';
 String _html(String value) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
-Future<void> _printBarcodeLabel(BuildContext context, Product product) async {
-  final directory = Directory('barcode-labels');
+Directory _ensureDirectory(String path) {
+  final directory = Directory(path);
   if (!directory.existsSync()) directory.createSync(recursive: true);
-  final safeName = product.sku.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_|_$'), '');
+  return directory;
+}
+
+String _safeFileName(String value, {required String fallback}) {
+  final safe = value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_|_$'), '');
+  return safe.isEmpty ? fallback : safe;
+}
+
+Future<void> _openFile(File file) async {
+  final path = file.absolute.path;
+  if (Platform.isWindows) {
+    await Process.run('cmd', ['/c', 'start', '', path]);
+  } else if (Platform.isMacOS) {
+    await Process.run('open', [path]);
+  } else {
+    await Process.run('xdg-open', [path]);
+  }
+}
+
+Future<void> _exportInvoice(BuildContext context, Invoice invoice, List<InvoiceLine> lines, {required bool printAfterExport}) async {
+  final directory = _ensureDirectory('invoices');
+  final safeName = _safeFileName(invoice.number, fallback: 'invoice');
+  final pdfFile = File('${directory.path}/$safeName.pdf');
+  final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+  _writeSimplePdf(
+    file: pdfFile,
+    title: 'Invoice ${invoice.number}',
+    headings: const ['Item', 'Qty', 'Amount'],
+    rows: [
+      ['Customer', invoice.customer, intl.DateFormat('yyyy-MM-dd HH:mm').format(invoice.createdAt)],
+      for (final line in lines) [line.product.name, line.quantity.toStringAsFixed(0), money.format(line.total)],
+      if (invoice.discountAmount > 0) ['Discount', '', '-${money.format(invoice.discountAmount)}'],
+      ['Payment', invoice.method, money.format(invoice.paid)],
+      if (invoice.tendered > invoice.paid) ['Tendered', '', money.format(invoice.tendered)],
+      if (invoice.changeDue > 0) ['Returned change', '', money.format(invoice.changeDue)],
+      ['Grand total', '', money.format(invoice.total)],
+      ['Due', '', money.format(invoice.due)],
+    ],
+  );
+  if (printAfterExport) {
+    final printFile = File('${directory.path}/$safeName-print.html');
+    printFile.writeAsStringSync(_invoiceHtml(invoice, lines, autoPrint: true));
+    await _openFile(printFile);
+  } else {
+    await _openFile(pdfFile);
+  }
+  if (!context.mounted) return;
+  _showMessage(context, 'Invoice ${invoice.number} saved: ${pdfFile.path}');
+}
+
+String _invoiceHtml(Invoice invoice, List<InvoiceLine> lines, {required bool autoPrint}) {
+  final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
+  final date = intl.DateFormat('yyyy-MM-dd HH:mm').format(invoice.createdAt);
+  final rows = lines
+      .map(
+        (line) => '''
+        <tr>
+          <td>${_html(line.product.name)}<br><small>${_html(line.product.sku)}</small></td>
+          <td>${line.quantity.toStringAsFixed(0)}</td>
+          <td>${_html(money.format(line.product.salePrice))}</td>
+          <td>${_html(money.format(line.total))}</td>
+        </tr>
+        ''',
+      )
+      .join();
+  return '''
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Invoice ${_html(invoice.number)}</title>
+  <style>
+    @page { size: A4; margin: 12mm; }
+    body { font-family: Arial, sans-serif; color: #17201d; }
+    header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #17201d; padding-bottom: 12px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 26px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #ddd; padding: 9px; text-align: left; }
+    th { background: #eef6f3; }
+    td:nth-child(2), td:nth-child(3), td:nth-child(4), .totals td:last-child { text-align: right; }
+    small { color: #63716d; }
+    .meta { text-align: right; line-height: 1.6; }
+    .totals { margin-left: auto; width: 320px; margin-top: 18px; }
+    .strong td { font-weight: 700; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Invoice</h1>
+      <p>${_html(invoice.customer)}</p>
+    </div>
+    <div class="meta">
+      <div><strong>${_html(invoice.number)}</strong></div>
+      <div>$date</div>
+      <div>${_html(invoice.method)}</div>
+    </div>
+  </header>
+  <table>
+    <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Total</th></tr></thead>
+    <tbody>$rows</tbody>
+  </table>
+  <table class="totals">
+    ${invoice.discountAmount > 0 ? '<tr><td>Discount</td><td>-${_html(money.format(invoice.discountAmount))}</td></tr>' : ''}
+    ${invoice.tendered > invoice.paid ? '<tr><td>Tendered</td><td>${_html(money.format(invoice.tendered))}</td></tr>' : ''}
+    ${invoice.changeDue > 0 ? '<tr><td>Returned change</td><td>${_html(money.format(invoice.changeDue))}</td></tr>' : ''}
+    <tr><td>Paid</td><td>${_html(money.format(invoice.paid))}</td></tr>
+    <tr><td>Due</td><td>${_html(money.format(invoice.due))}</td></tr>
+    <tr class="strong"><td>Grand total</td><td>${_html(money.format(invoice.total))}</td></tr>
+  </table>
+  ${autoPrint ? '<script>window.addEventListener("load", () => window.print());</script>' : ''}
+</body>
+</html>
+''';
+}
+
+void _writeSimplePdf({required File file, required String title, required List<String> headings, required List<List<String>> rows}) {
+  final lines = <String>[
+    title,
+    '',
+    headings.join('   |   '),
+    '-' * 92,
+    for (final row in rows) row.join('   |   '),
+  ];
+  const linesPerPage = 42;
+  final pages = <List<String>>[];
+  for (var index = 0; index < lines.length; index += linesPerPage) {
+    pages.add(lines.sublist(index, (index + linesPerPage).clamp(0, lines.length)));
+  }
+
+  final objects = <int, String>{};
+  objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+  final kids = <String>[];
+  for (var pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+    final pageObject = 4 + pageIndex * 2;
+    final contentObject = pageObject + 1;
+    kids.add('$pageObject 0 R');
+    objects[pageObject] =
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents $contentObject 0 R >>';
+    final content = _pdfContentStream(pages[pageIndex], pageIndex + 1, pages.length);
+    objects[contentObject] = '<< /Length ${latin1.encode(content).length} >>\nstream\n$content\nendstream';
+  }
+  objects[2] = '<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pages.length} >>';
+
+  final buffer = StringBuffer('%PDF-1.4\n');
+  final offsets = <int, int>{};
+  for (final objectNumber in objects.keys.toList()..sort()) {
+    offsets[objectNumber] = latin1.encode(buffer.toString()).length;
+    buffer.write('$objectNumber 0 obj\n${objects[objectNumber]}\nendobj\n');
+  }
+  final xrefOffset = latin1.encode(buffer.toString()).length;
+  buffer.write('xref\n0 ${objects.length + 1}\n');
+  buffer.write('0000000000 65535 f \n');
+  for (var objectNumber = 1; objectNumber <= objects.length; objectNumber++) {
+    buffer.write('${offsets[objectNumber]!.toString().padLeft(10, '0')} 00000 n \n');
+  }
+  buffer.write('trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n$xrefOffset\n%%EOF');
+  file.writeAsBytesSync(latin1.encode(buffer.toString()));
+}
+
+String _pdfContentStream(List<String> lines, int pageNumber, int pageCount) {
+  final content = StringBuffer('BT\n/F1 16 Tf\n50 800 Td\n(${_pdfText(lines.firstOrNull ?? '')}) Tj\n/F1 9 Tf\n');
+  var firstLine = true;
+  for (final line in lines.skip(1)) {
+    final text = _pdfText(line.length > 110 ? line.substring(0, 110) : line);
+    content.write('${firstLine ? '0 -24 Td' : 'T*'} ($text) Tj\n');
+    firstLine = false;
+  }
+  content.write('/F1 8 Tf\n0 -24 Td\n(Page $pageNumber of $pageCount) Tj\nET');
+  return content.toString();
+}
+
+String _pdfText(String value) {
+  return value.replaceAll('\\', r'\\').replaceAll('(', r'\(').replaceAll(')', r'\)').replaceAll(RegExp(r'[^\x20-\x7E]'), '?');
+}
+
+Future<void> _printBarcodeLabel(BuildContext context, Product product) async {
+  final directory = _ensureDirectory('barcode-labels');
+  final safeName = _safeFileName(product.sku, fallback: 'product');
   final file = File('${directory.path}/${safeName.isEmpty ? 'product' : safeName}-label.html');
   final barcodeSvg = _code39Svg(product.barcode.isEmpty ? product.sku : product.barcode);
   final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
@@ -2343,8 +2834,9 @@ Future<void> _printBarcodeLabel(BuildContext context, Product product) async {
 </body>
 </html>
 ''');
+  await _openFile(file);
   if (!context.mounted) return;
-  _showMessage(context, 'Barcode label exported: ${file.path}');
+  _showMessage(context, 'Barcode label opened for printing: ${file.path}');
 }
 
 String _code39Svg(String value) {
