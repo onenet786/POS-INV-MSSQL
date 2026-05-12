@@ -6,6 +6,8 @@ dotenv.config();
 const schema = z.object({
   NODE_ENV: z.string().default('development'),
   PORT: z.coerce.number().default(4100),
+  HOST: z.string().default('0.0.0.0'),
+  PUBLIC_API_URL: z.string().optional(),
   SQL_SERVER: z.string().default('localhost'),
   SQL_PORT: z.coerce.number().default(1433),
   SQL_DATABASE: z.string().default('PosInvMssql'),
@@ -17,4 +19,3 @@ const schema = z.object({
 });
 
 export const env = schema.parse(process.env);
-

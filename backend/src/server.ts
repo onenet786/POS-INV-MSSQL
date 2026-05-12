@@ -24,7 +24,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: env.CORS_ORIGIN } });
 
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -53,9 +53,12 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 });
 
 await getPool();
-server.listen(env.PORT, () => {
-  console.log(`API running on http://localhost:${env.PORT}`);
-  console.log(`Swagger running on http://localhost:${env.PORT}/docs`);
+server.listen(env.PORT, env.HOST, () => {
+  const displayHost = env.HOST === '0.0.0.0' ? 'localhost' : env.HOST;
+  const publicUrl = env.PUBLIC_API_URL?.replace(/\/$/, '');
+  console.log(`API running on http://${displayHost}:${env.PORT}`);
+  console.log(`Swagger running on http://${displayHost}:${env.PORT}/docs`);
+  if (publicUrl) console.log(`Public Swagger running on ${publicUrl}/docs`);
 });
 
 let shuttingDown = false;

@@ -1318,28 +1318,28 @@ class _LoginPageState extends State<LoginPage> {
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
+          constraints: const BoxConstraints(maxWidth: 320),
           child: Card(
             child: Padding(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(18),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   CircleAvatar(
-                    radius: 28,
+                    radius: 20,
                     backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                    child: const Text('IP'),
+                    child: const Text('IP', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
                   ),
-                  const SizedBox(height: 18),
-                  Text('InvPro login', textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 10),
+                  Text('InvPro login', textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 14),
                   TextField(
                     controller: email,
-                    decoration: const InputDecoration(prefixIcon: Icon(Icons.mail_outline), labelText: 'Email', border: OutlineInputBorder()),
+                    decoration: const InputDecoration(prefixIcon: Icon(Icons.mail_outline), labelText: 'Email', border: OutlineInputBorder(), isDense: true),
                     onSubmitted: (_) => _login(),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   TextField(
                     controller: password,
                     obscureText: obscure,
@@ -1348,19 +1348,21 @@ class _LoginPageState extends State<LoginPage> {
                       suffixIcon: IconButton(onPressed: () => setState(() => obscure = !obscure), icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined)),
                       labelText: 'Password',
                       border: const OutlineInputBorder(),
+                      isDense: true,
                     ),
                     onSubmitted: (_) => _login(),
                   ),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(onPressed: loggingIn ? null : _login, icon: const Icon(Icons.login), label: Text(loggingIn ? 'Connecting...' : 'Login')),
                   const SizedBox(height: 12),
+                  FilledButton.icon(onPressed: loggingIn ? null : _login, icon: const Icon(Icons.login), label: Text(loggingIn ? 'Connecting...' : 'Login')),
+                  const SizedBox(height: 8),
                   Wrap(
                     alignment: WrapAlignment.center,
-                    spacing: 8,
+                    spacing: 6,
+                    runSpacing: 4,
                     children: [
-                      ActionChip(label: const Text('Admin'), onPressed: () => _fill('admin@invpro.local', 'Admin@12345')),
-                      ActionChip(label: const Text('Manager'), onPressed: () => _fill('manager@invpro.local', 'Manager@12345')),
-                      ActionChip(label: const Text('Cashier'), onPressed: () => _fill('cashier@invpro.local', 'Cashier@12345')),
+                      ActionChip(visualDensity: VisualDensity.compact, label: const Text('Admin'), onPressed: () => _fill('admin@invpro.local', 'Admin@12345')),
+                      ActionChip(visualDensity: VisualDensity.compact, label: const Text('Manager'), onPressed: () => _fill('manager@invpro.local', 'Manager@12345')),
+                      ActionChip(visualDensity: VisualDensity.compact, label: const Text('Cashier'), onPressed: () => _fill('cashier@invpro.local', 'Cashier@12345')),
                     ],
                   ),
                 ],
