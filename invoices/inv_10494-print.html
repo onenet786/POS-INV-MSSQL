@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Invoice INV-10494</title>
+  <style>
+    @page { size: A4; margin: 12mm; }
+    body { font-family: Arial, sans-serif; color: #17201d; }
+    header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #17201d; padding-bottom: 12px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 26px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #ddd; padding: 9px; text-align: left; }
+    th { background: #eef6f3; }
+    td:nth-child(2), td:nth-child(3), td:nth-child(4), .totals td:last-child { text-align: right; }
+    small { color: #63716d; }
+    .meta { text-align: right; line-height: 1.6; }
+    .totals { margin-left: auto; width: 320px; margin-top: 18px; }
+    .strong td { font-weight: 700; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Invoice</h1>
+      <p>Walk-in Customer</p>
+    </div>
+    <div class="meta">
+      <div><strong>INV-10494</strong></div>
+      <div>2026-05-12 14:12</div>
+      <div>Cash</div>
+    </div>
+  </header>
+  <table>
+    <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Total</th></tr></thead>
+    <tbody>        <tr>
+          <td>USB-C Charger 25W<br><small>CHG-25W</small></td>
+          <td>1</td>
+          <td>PKR 2,800</td>
+          <td>PKR 2,800</td>
+        </tr>
+        </tbody>
+  </table>
+  <table class="totals">
+    
+    
+    
+    <tr><td>Paid</td><td>PKR 2,800</td></tr>
+    <tr><td>Due</td><td>PKR 0</td></tr>
+    <tr class="strong"><td>Grand total</td><td>PKR 2,800</td></tr>
+  </table>
+  <script>window.addEventListener("load", () => window.print());</script>
+</body>
+</html>

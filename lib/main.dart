@@ -102,7 +102,12 @@ class StoreScope extends InheritedNotifier<AppStore> {
 }
 
 class ApiClient {
-  ApiClient({this.baseUrl = 'http://localhost:4100/api'});
+  ApiClient({
+    this.baseUrl = const String.fromEnvironment(
+      'API_BASE_URL',
+      defaultValue: 'http://pos.flaura.pk:4100/api',
+    ),
+  });
 
   final String baseUrl;
   String? token;
