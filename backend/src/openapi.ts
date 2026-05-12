@@ -1,3 +1,7 @@
+import { env } from './config/env.js';
+
+const apiUrl = env.PUBLIC_API_URL?.replace(/\/$/, '') ?? `http://localhost:${env.PORT}`;
+
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
@@ -5,7 +9,7 @@ export const openApiSpec = {
     version: '1.0.0',
     description: 'REST API for enterprise inventory, POS, invoices, barcode/QR, reporting, and multi-branch workflows.',
   },
-  servers: [{ url: 'http://localhost:4100/api' }],
+  servers: [{ url: `${apiUrl}/api` }],
   security: [{ bearerAuth: [] }],
   components: {
     securitySchemes: {
@@ -67,4 +71,3 @@ export const openApiSpec = {
     '/reference/units': { post: { summary: 'Create unit' } },
   },
 };
-
