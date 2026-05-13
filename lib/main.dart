@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' as intl;
+
+import 'api_transport_io.dart' if (dart.library.html) 'api_transport_web.dart';
 
 void main() {
   runApp(const InvProApp());
@@ -83,6 +86,7 @@ class WindowMode {
   static const _channel = MethodChannel('invpro/window');
 
   static Future<void> setCashierTerminalMode(bool enabled) async {
+    if (kIsWeb) return;
     if (!Platform.isWindows) return;
     try {
       await _channel.invokeMethod<void>('setCashierTerminalMode', {'enabled': enabled});
@@ -111,7 +115,6 @@ class ApiClient {
 
   final String baseUrl;
   String? token;
-  final HttpClient _client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
 
   Future<Map<String, dynamic>> login(String email, String password) async {
     final data = await post('/auth/login', {'email': email, 'password': password}, auth: false);
@@ -145,17 +148,23 @@ class ApiClient {
   }
 
   Future<Object?> _request(String method, String path, {Map<String, dynamic>? body, bool auth = true}) async {
-    final request = await _client.openUrl(method, Uri.parse('$baseUrl$path'));
-    request.headers.contentType = ContentType.json;
-    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-    if (auth && token != null) request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-    if (body != null) request.write(jsonEncode(body));
-    final response = await request.close();
-    final text = await response.transform(utf8.decoder).join();
+    final response = await sendApiRequest(
+      method: method,
+      uri: Uri.parse('$baseUrl$path'),
+      token: auth ? token : null,
+      body: body,
+    );
+    final text = response.body;
     final decoded = text.isEmpty ? null : jsonDecode(text);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final message = decoded is Map ? decoded['message']?.toString() : null;
-      throw HttpException(message ?? 'API request failed (${response.statusCode})', uri: Uri.parse('$baseUrl$path'));
+      final permission = decoded is Map ? decoded['permission']?.toString() : null;
+      final details = [
+        if (message != null && message.isNotEmpty) message else 'API request failed',
+        if (permission != null && permission.isNotEmpty) 'permission=$permission',
+        'status=${response.statusCode}',
+      ].join(' | ');
+      throw HttpException(details, uri: Uri.parse('$baseUrl$path'));
     }
     return decoded;
   }
@@ -227,13 +236,16 @@ class AppStore extends ChangeNotifier {
   bool _syncing = false;
 
   File get _recordsFile {
-    final appData = Platform.environment['APPDATA'];
+    if (kIsWeb) return File('invpro_records.json');
+    final appData = Platform.isWindows ? Platform.environment['APPDATA'] : null;
     if (appData != null && appData.isNotEmpty) {
       final directory = Directory('$appData\\InvPro');
       if (!directory.existsSync()) directory.createSync(recursive: true);
       return File('${directory.path}\\records.json');
     }
-    return File('invpro_records.json');
+    final directory = Directory('${Directory.systemTemp.path}${Platform.pathSeparator}InvPro');
+    if (!directory.existsSync()) directory.createSync(recursive: true);
+    return File('${directory.path}${Platform.pathSeparator}records.json');
   }
 
   @override
@@ -243,6 +255,7 @@ class AppStore extends ChangeNotifier {
   }
 
   void _loadFromDisk() {
+    if (kIsWeb) return;
     final file = _recordsFile;
     if (!file.existsSync()) return;
     try {
@@ -278,13 +291,16 @@ class AppStore extends ChangeNotifier {
       lastLoginPassword = data['lastLoginPassword']?.toString();
       _refreshNextIds();
     } catch (_) {
-      final backup = File('${file.path}.bad');
-      if (backup.existsSync()) backup.deleteSync();
-      file.renameSync(backup.path);
+      try {
+        final backup = File('${file.path}.bad');
+        if (backup.existsSync()) backup.deleteSync();
+        file.renameSync(backup.path);
+      } catch (_) {}
     }
   }
 
   void _saveToDisk() {
+    if (kIsWeb) return;
     final data = {
       'products': products.map(_productToJson).toList(),
       'customers': customers.map(_partyToJson).toList(),
@@ -298,7 +314,9 @@ class AppStore extends ChangeNotifier {
       'lastLoginEmail': lastLoginEmail,
       'lastLoginPassword': lastLoginPassword,
     };
-    _recordsFile.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
+    try {
+      _recordsFile.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
+    } catch (_) {}
   }
 
   void _refreshNextIds() {
@@ -328,7 +346,7 @@ class AppStore extends ChangeNotifier {
     try {
       final apiUser = await api.login(email.trim(), password);
       sqlConnected = true;
-      syncStatus = 'Connected to SQL Server';
+      syncStatus = 'Connected to SQL Server; loading data...';
       final user = AppUser(
         id: _int(apiUser, 'id'),
         name: _string(apiUser, 'name'),
@@ -336,8 +354,7 @@ class AppStore extends ChangeNotifier {
         role: _string(apiUser, 'role', 'Cashier'),
         active: true,
       );
-      await _processPendingSyncJobs();
-      await loadSqlData();
+      unawaited(_syncAfterLogin());
       return user;
     } catch (error) {
       sqlConnected = false;
@@ -351,6 +368,17 @@ class AppStore extends ChangeNotifier {
     return password == user.defaultPassword ? user : null;
   }
 
+  Future<void> _syncAfterLogin() async {
+    try {
+      await loadSqlData();
+      await _processPendingSyncJobs();
+      await loadSqlData();
+    } catch (error) {
+      sqlConnected = false;
+      _setSyncStatus('Waiting to sync ${pendingSyncJobs.length} record(s): ${_shortError(error)}');
+    }
+  }
+
   Future<void> loadSqlData() async {
     if (!sqlConnected) return;
     final roles = await api.getList('/users/roles');
@@ -358,15 +386,25 @@ class AppStore extends ChangeNotifier {
       ..clear()
       ..addEntries(roles.map((role) => MapEntry(_string(role, 'Name'), _int(role, 'RoleId'))));
 
-    final apiProducts = await api.getList('/products');
-    products
-      ..clear()
-      ..addAll(apiProducts.map(_apiProductFromJson));
+    final limitedPermissions = <String>[];
 
-    final apiCustomers = await api.getList('/customers');
-    customers
-      ..clear()
-      ..addAll(apiCustomers.map(_apiCustomerFromJson));
+    try {
+      final apiProducts = await api.getList('/products');
+      products
+        ..clear()
+        ..addAll(apiProducts.map(_apiProductFromJson));
+    } catch (error) {
+      limitedPermissions.add(_shortError(error));
+    }
+
+    try {
+      final apiCustomers = await api.getList('/customers');
+      customers
+        ..clear()
+        ..addAll(apiCustomers.map(_apiCustomerFromJson));
+    } catch (error) {
+      limitedPermissions.add(_shortError(error));
+    }
 
     try {
       final apiSuppliers = await api.getList('/suppliers');
@@ -390,6 +428,9 @@ class AppStore extends ChangeNotifier {
     } catch (_) {}
 
     _refreshNextIds();
+    if (limitedPermissions.isNotEmpty) {
+      syncStatus = 'Connected with limited permissions: ${limitedPermissions.join(' ; ')}';
+    }
     _saveToDisk();
     notifyListeners();
   }
@@ -404,6 +445,7 @@ class AppStore extends ChangeNotifier {
         if (email == null || password == null) return;
         await api.login(email, password);
         sqlConnected = true;
+        await loadSqlData();
       }
       await _processPendingSyncJobs();
       await loadSqlData();
@@ -685,7 +727,11 @@ class AppStore extends ChangeNotifier {
         'isActive': true,
       };
       final row = isNew ? await api.post('/products', body) : await api.put('/products/${product.id}', body);
-      _replaceProductId(product.id, _int(row, 'ProductId', product.id));
+      final nextId = _int(row, 'ProductId', product.id);
+      _replaceProductId(product.id, nextId);
+      if (!products.any((item) => item.id == nextId)) {
+        products.add(product.copyWith(id: nextId, stock: _double(row, 'StockOnHand', product.stock)));
+      }
       _setSyncStatus('Saved product to SQL Server');
     } catch (error) {
       if (queueOnFail && job != null) _enqueueSyncJob(job);
@@ -703,6 +749,10 @@ class AppStore extends ChangeNotifier {
       final row = isNew ? await api.post(path, body) : await api.put('$path/${party.id}', body);
       final nextId = _int(row, isCustomer ? 'CustomerId' : 'SupplierId', party.id);
       _replacePartyId(isCustomer ? customers : suppliers, party.id, nextId);
+      final list = isCustomer ? customers : suppliers;
+      if (!list.any((item) => item.id == nextId)) {
+        list.add(party.copyWith(id: nextId));
+      }
       _setSyncStatus('Saved ${isCustomer ? 'customer' : 'supplier'} to SQL Server');
     } catch (error) {
       if (queueOnFail && job != null) _enqueueSyncJob(job);
@@ -776,15 +826,23 @@ class AppStore extends ChangeNotifier {
 
   Future<void> _syncInvoice(Invoice invoice, List<InvoiceLine> lines, {bool queueOnFail = false, SyncJob? job}) async {
     try {
+      final items = <Map<String, dynamic>>[];
+      for (final line in lines) {
+        items.add({
+          'productId': await _ensureProductIdForInvoiceLine(line),
+          'quantity': line.quantity,
+          'unitPrice': line.product.salePrice,
+          'discountAmount': 0,
+          'taxAmount': 0,
+        });
+      }
       final row = await api.post('/invoices', {
         'branchId': 1,
         'warehouseId': 1,
         'customerId': _customerIdByName(invoice.customer),
         'discountAmount': invoice.discountAmount,
         'payments': invoice.paid > 0 ? [{'method': invoice.method, 'amount': invoice.paid}] : [],
-        'items': [
-          for (final line in lines) {'productId': line.product.id, 'quantity': line.quantity, 'unitPrice': line.product.salePrice, 'discountAmount': 0, 'taxAmount': 0}
-        ],
+        'items': items,
       });
       _replaceInvoice(invoice.id, invoice.copyWith(id: _int(row, 'invoiceId', invoice.id), number: _string(row, 'invoiceNo', invoice.number)));
       _setSyncStatus('Saved invoice to SQL Server');
@@ -809,6 +867,7 @@ class AppStore extends ChangeNotifier {
   void _replaceProductId(int oldId, int newId) {
     final index = products.indexWhere((item) => item.id == oldId);
     if (index != -1 && oldId != newId) products[index] = products[index].copyWith(id: newId);
+    if (oldId != newId) _replaceQueuedInvoiceProductId(oldId, newId);
   }
 
   void _replacePartyId(List<Party> list, int oldId, int newId) {
@@ -829,6 +888,55 @@ class AppStore extends ChangeNotifier {
   int? _customerIdByName(String name) {
     final matches = customers.where((party) => party.name == name && party.id > 0);
     return matches.isEmpty ? null : matches.first.id;
+  }
+
+  int? _findProductIdForInvoiceLine(InvoiceLine line) {
+    final byId = products.where((product) => product.id == line.product.id);
+    if (byId.isNotEmpty) return byId.first.id;
+    final bySku = products.where((product) => product.sku.isNotEmpty && product.sku == line.product.sku);
+    if (bySku.isNotEmpty) return bySku.first.id;
+    final byBarcode = products.where((product) => product.barcode.isNotEmpty && product.barcode == line.product.barcode);
+    if (byBarcode.isNotEmpty) return byBarcode.first.id;
+    final byName = products.where((product) => product.name == line.product.name);
+    if (byName.isNotEmpty) return byName.first.id;
+    return null;
+  }
+
+  Future<int> _ensureProductIdForInvoiceLine(InvoiceLine line) async {
+    final existingId = _findProductIdForInvoiceLine(line);
+    if (existingId != null) return existingId;
+
+    final product = _withProductCodes(line.product, nextId: line.product.id);
+    final row = await api.post('/products', {
+      'name': product.name,
+      'unitId': 1,
+      'sku': product.sku,
+      'barcode': product.barcode,
+      'salePrice': product.salePrice,
+      'purchasePrice': product.purchasePrice,
+      'stockQuantity': product.stock < line.quantity ? line.quantity : product.stock,
+      'taxRate': 0,
+      'minStockLevel': product.minStock,
+      'hasExpiry': false,
+      'trackSerial': false,
+      'isActive': true,
+    });
+    final newId = _int(row, 'ProductId', product.id);
+    products.add(product.copyWith(id: newId, stock: _double(row, 'StockOnHand', product.stock)));
+    _replaceQueuedInvoiceProductId(product.id, newId);
+    return newId;
+  }
+
+  void _replaceQueuedInvoiceProductId(int oldId, int newId) {
+    for (final job in pendingSyncJobs.where((item) => item.type == 'invoice')) {
+      final rawLines = job.payload['lines'];
+      if (rawLines is! List) continue;
+      for (final line in rawLines.whereType<Map>()) {
+        if (_int(Map<String, dynamic>.from(line), 'productId') == oldId) {
+          line['productId'] = newId;
+        }
+      }
+    }
   }
 
   SyncJob _job(String type, String action, int recordId, Map<String, dynamic> payload) {
@@ -1384,11 +1492,30 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _login() async {
     setState(() => loggingIn = true);
     final store = StoreScope.of(context);
-    final user = await store.login(email.text, password.text);
+    AppUser? user;
+    String? errorMessage;
+    try {
+      user = await store.login(email.text, password.text).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          store.syncStatus = 'Local mode: login timed out after 15s while connecting to ${store.api.baseUrl}';
+          return null;
+        },
+      );
+      if (user == null) {
+        errorMessage = store.syncStatus.startsWith('Local mode:')
+            ? store.syncStatus
+            : 'Invalid email, password, or disabled user';
+      }
+    } catch (error) {
+      errorMessage = 'Local mode: ${_shortError(error)}';
+      store.syncStatus = errorMessage;
+    } finally {
+      if (mounted) setState(() => loggingIn = false);
+    }
     if (!mounted) return;
-    setState(() => loggingIn = false);
     if (user == null) {
-      _showMessage(context, 'Invalid email, password, or disabled user');
+      _showMessage(context, errorMessage ?? 'Invalid email, password, or disabled user');
       return;
     }
     _showMessage(context, store.syncStatus);
@@ -1426,6 +1553,7 @@ class _ShellPageState extends State<ShellPage> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 1000;
+    final compactTopBar = MediaQuery.sizeOf(context).width < 720;
     final store = StoreScope.of(context);
     final cashierMode = widget.user.isCashier;
     final modules = cashierMode ? allModules.where((module) => module.title == 'POS').toList() : allModules.where((module) => module.allowed(widget.user)).toList();
@@ -1458,30 +1586,69 @@ class _ShellPageState extends State<ShellPage> {
                 SliverAppBar(
                   pinned: true,
                   automaticallyImplyLeading: false,
-                  title: Text(modules[selected].title),
-                  actions: [
-                    if (!cashierMode) IconButton(tooltip: 'Scan barcode', onPressed: () => _showMessage(context, 'Barcode scan ready'), icon: const Icon(Icons.qr_code_scanner_outlined)),
-                    if (!cashierMode) IconButton(tooltip: 'Toggle theme', onPressed: widget.onThemeChanged, icon: Icon(widget.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined)),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      child: Tooltip(
-                        message: store.syncStatus,
-                        child: Chip(
-                          avatar: Icon(store.sqlConnected ? Icons.storage_outlined : Icons.save_outlined, size: 18),
-                          label: Text(store.pendingSyncJobs.isEmpty ? (store.sqlConnected ? 'SQL' : 'Local') : 'Sync ${store.pendingSyncJobs.length}'),
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Sync pending records',
-                      onPressed: store.pendingSyncJobs.isEmpty ? null : () => unawaited(store.tryReconnectAndSync()),
-                      icon: const Icon(Icons.cloud_sync_outlined),
-                    ),
-                    Chip(avatar: const Icon(Icons.person_outline, size: 18), label: Text(cashierMode ? widget.user.name : widget.user.role)),
-                    IconButton(tooltip: 'Change password', onPressed: () => _openChangePasswordDialog(context, widget.user), icon: const Icon(Icons.lock_reset_outlined)),
-                    IconButton(tooltip: 'Logout', onPressed: widget.onLogout, icon: const Icon(Icons.logout)),
-                    const SizedBox(width: 8),
-                  ],
+                  title: Text(modules[selected].title, overflow: TextOverflow.ellipsis),
+                  actions: compactTopBar
+                      ? [
+                          IconButton(
+                            tooltip: store.syncStatus,
+                            onPressed: () => _showMessage(context, store.syncStatus),
+                            icon: Icon(store.pendingSyncJobs.isEmpty ? (store.sqlConnected ? Icons.storage_outlined : Icons.save_outlined) : Icons.cloud_sync_outlined),
+                          ),
+                          PopupMenuButton<String>(
+                            tooltip: 'Menu',
+                            icon: const Icon(Icons.more_vert),
+                            onSelected: (value) {
+                              switch (value) {
+                                case 'scan':
+                                  _showMessage(context, 'Barcode scan ready');
+                                  break;
+                                case 'theme':
+                                  widget.onThemeChanged();
+                                  break;
+                                case 'sync':
+                                  unawaited(store.tryReconnectAndSync());
+                                  break;
+                                case 'password':
+                                  _openChangePasswordDialog(context, widget.user);
+                                  break;
+                                case 'logout':
+                                  widget.onLogout();
+                                  break;
+                              }
+                            },
+                            itemBuilder: (context) => [
+                              if (!cashierMode) const PopupMenuItem(value: 'scan', child: ListTile(leading: Icon(Icons.qr_code_scanner_outlined), title: Text('Scan barcode'))),
+                              if (!cashierMode) const PopupMenuItem(value: 'theme', child: ListTile(leading: Icon(Icons.dark_mode_outlined), title: Text('Theme'))),
+                              PopupMenuItem(enabled: store.pendingSyncJobs.isNotEmpty, value: 'sync', child: const ListTile(leading: Icon(Icons.cloud_sync_outlined), title: Text('Sync'))),
+                              const PopupMenuItem(value: 'password', child: ListTile(leading: Icon(Icons.lock_reset_outlined), title: Text('Password'))),
+                              const PopupMenuItem(value: 'logout', child: ListTile(leading: Icon(Icons.logout), title: Text('Logout'))),
+                            ],
+                          ),
+                        ]
+                      : [
+                          if (!cashierMode) IconButton(tooltip: 'Scan barcode', onPressed: () => _showMessage(context, 'Barcode scan ready'), icon: const Icon(Icons.qr_code_scanner_outlined)),
+                          if (!cashierMode) IconButton(tooltip: 'Toggle theme', onPressed: widget.onThemeChanged, icon: Icon(widget.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined)),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Tooltip(
+                              message: store.syncStatus,
+                              child: ActionChip(
+                                avatar: Icon(store.sqlConnected ? Icons.storage_outlined : Icons.save_outlined, size: 18),
+                                label: Text(store.pendingSyncJobs.isEmpty ? (store.sqlConnected ? 'SQL' : 'Local') : 'Sync ${store.pendingSyncJobs.length}'),
+                                onPressed: () => _showMessage(context, store.syncStatus),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Sync pending records',
+                            onPressed: store.pendingSyncJobs.isEmpty ? null : () => unawaited(store.tryReconnectAndSync()),
+                            icon: const Icon(Icons.cloud_sync_outlined),
+                          ),
+                          Chip(avatar: const Icon(Icons.person_outline, size: 18), label: Text(cashierMode ? widget.user.name : widget.user.role)),
+                          IconButton(tooltip: 'Change password', onPressed: () => _openChangePasswordDialog(context, widget.user), icon: const Icon(Icons.lock_reset_outlined)),
+                          IconButton(tooltip: 'Logout', onPressed: widget.onLogout, icon: const Icon(Icons.logout)),
+                          const SizedBox(width: 8),
+                        ],
                 ),
                 SliverPadding(
                   padding: const EdgeInsets.all(16),
@@ -1651,6 +1818,18 @@ class _PosViewState extends State<PosView> {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= 980;
+            if (!wide) {
+              return _mobilePosLayout(
+                store: store,
+                money: money,
+                subtotal: subtotal,
+                discount: discount,
+                total: total,
+                tendered: tendered,
+                changeDue: changeDue,
+                balanceDue: balanceDue,
+              );
+            }
             return Wrap(
               spacing: 16,
               runSpacing: 16,
@@ -1792,6 +1971,191 @@ class _PosViewState extends State<PosView> {
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+
+  Widget _mobilePosLayout({
+    required AppStore store,
+    required intl.NumberFormat money,
+    required double subtotal,
+    required double discount,
+    required double total,
+    required double tendered,
+    required double changeDue,
+    required double balanceDue,
+  }) {
+    final visibleProducts = store.products.where((product) => product.stock > 0).take(12).toList();
+    return AppPanel(
+      title: 'POS',
+      horizontalScroll: false,
+      action: IconButton(
+        tooltip: 'Clear bill',
+        onPressed: cart.isEmpty ? null : _clearCart,
+        icon: const Icon(Icons.delete_sweep_outlined),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: search,
+            focusNode: searchFocus,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: IconButton(
+                tooltip: 'Add item',
+                onPressed: () => _addBySearch(store),
+                icon: const Icon(Icons.add_shopping_cart_outlined),
+              ),
+              labelText: 'Scan or search item',
+              border: const OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => _addBySearch(store),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 42,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: visibleProducts.length + 1,
+              separatorBuilder: (context, index) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return ActionChip(
+                    avatar: const Icon(Icons.list_alt_outlined, size: 18),
+                    label: const Text('Items'),
+                    onPressed: () => unawaited(_openItemPicker(store)),
+                  );
+                }
+                final product = visibleProducts[index - 1];
+                return ActionChip(
+                  avatar: const Icon(Icons.add, size: 18),
+                  label: Text(product.name, overflow: TextOverflow.ellipsis),
+                  onPressed: () => _addProduct(product),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (cart.isEmpty)
+            Container(
+              height: 96,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).dividerColor),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('No items in bill'),
+            )
+          else
+            Column(
+              children: [
+                for (var index = 0; index < cart.length; index++)
+                  _mobileCartLine(index, cart[index], money),
+              ],
+            ),
+          const Divider(height: 24),
+          DropdownButtonFormField<String>(
+            initialValue: customer,
+            decoration: const InputDecoration(labelText: 'Customer', border: OutlineInputBorder()),
+            items: [for (final party in store.customers) DropdownMenuItem(value: party.name, child: Text(party.name, overflow: TextOverflow.ellipsis))],
+            onChanged: (value) => setState(() => customer = value ?? customer),
+          ),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            initialValue: paymentMethod,
+            decoration: const InputDecoration(labelText: 'Payment', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'Cash', child: Text('Cash')),
+              DropdownMenuItem(value: 'Card', child: Text('Card')),
+              DropdownMenuItem(value: 'Credit', child: Text('Credit')),
+            ],
+            onChanged: (value) {
+              setState(() {
+                paymentMethod = value ?? paymentMethod;
+                if (paymentMethod == 'Credit') amountPaid.clear();
+              });
+            },
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: amountPaid,
+            enabled: paymentMethod != 'Credit',
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.payments_outlined),
+              labelText: paymentMethod == 'Cash' ? 'Cash received' : 'Amount paid',
+              hintText: total > 0 ? total.toStringAsFixed(0) : '0',
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 8),
+          TotalRow(label: 'Subtotal', value: money.format(subtotal)),
+          TotalRow(
+            label: 'Discount',
+            value: money.format(discount),
+            action: IconButton(
+              tooltip: 'Set discount',
+              onPressed: cart.isEmpty ? null : () => unawaited(_openDiscountDialog(subtotal)),
+              icon: const Icon(Icons.percent_outlined),
+            ),
+          ),
+          TotalRow(label: 'Grand total', value: money.format(total), strong: true),
+          TotalRow(label: paymentMethod == 'Credit' ? 'Balance due' : 'Return change', value: money.format(paymentMethod == 'Credit' ? balanceDue : changeDue), strong: changeDue > 0 || balanceDue > 0),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: cart.isEmpty ? null : () => _postInvoice(store, total, tendered),
+                  icon: const Icon(Icons.receipt_long_outlined),
+                  label: const Text('Post'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: 'Post & print',
+                onPressed: cart.isEmpty ? null : () => _postInvoice(store, total, tendered, printAfterPost: true),
+                icon: const Icon(Icons.print_outlined),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _mobileCartLine(int index, InvoiceLine line, intl.NumberFormat money) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        border: Border.all(color: selectedLineIndex == index ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: InkWell(
+        onTap: () => setState(() => selectedLineIndex = index),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(line.product.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text('${line.product.sku}  x ${line.quantity.toStringAsFixed(0)}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 2),
+                  Text(money.format(line.total), style: const TextStyle(fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ),
+            IconButton(tooltip: 'Qty -', onPressed: () => _changeLineQuantity(index, -1), icon: const Icon(Icons.remove_circle_outline)),
+            Text(line.quantity.toStringAsFixed(0), textAlign: TextAlign.center),
+            IconButton(tooltip: 'Qty +', onPressed: () => _changeLineQuantity(index, 1), icon: const Icon(Icons.add_circle_outline)),
+            IconButton(tooltip: 'Remove', onPressed: () => _removeLine(index), icon: const Icon(Icons.close)),
+          ],
         ),
       ),
     );
@@ -2557,6 +2921,10 @@ List<List<String>> _reportRows(AppStore store, String report) {
 }
 
 Future<void> _exportReport(BuildContext context, String report, ReportExport format) async {
+  if (kIsWeb) {
+    _showMessage(context, 'Export is available in the desktop app. Web export is not supported yet.');
+    return;
+  }
   final rows = _reportRows(StoreScope.of(context), report);
   final safeName = _safeFileName(report, fallback: 'report');
   final directory = _ensureDirectory('reports');
@@ -2583,6 +2951,10 @@ Future<void> _exportReport(BuildContext context, String report, ReportExport for
 }
 
 Future<void> _printReport(BuildContext context, String report) async {
+  if (kIsWeb) {
+    _showMessage(context, 'Printing reports is available in the desktop app. Web print is not supported yet.');
+    return;
+  }
   final rows = _reportRows(StoreScope.of(context), report);
   final directory = _ensureDirectory('reports');
   final file = File('${directory.path}/${_safeFileName(report, fallback: 'report')}-print.html');
@@ -2634,6 +3006,7 @@ String _safeFileName(String value, {required String fallback}) {
 }
 
 Future<void> _openFile(File file) async {
+  if (kIsWeb) return;
   final path = file.absolute.path;
   if (Platform.isWindows) {
     await Process.run('cmd', ['/c', 'start', '', path]);
@@ -2645,6 +3018,10 @@ Future<void> _openFile(File file) async {
 }
 
 Future<void> _exportInvoice(BuildContext context, Invoice invoice, List<InvoiceLine> lines, {required bool printAfterExport}) async {
+  if (kIsWeb) {
+    _showMessage(context, 'Invoice export is available in the desktop app. Web export is not supported yet.');
+    return;
+  }
   final directory = _ensureDirectory('invoices');
   final safeName = _safeFileName(invoice.number, fallback: 'invoice');
   final pdfFile = File('${directory.path}/$safeName.pdf');
@@ -2803,6 +3180,10 @@ String _pdfText(String value) {
 }
 
 Future<void> _printBarcodeLabel(BuildContext context, Product product) async {
+  if (kIsWeb) {
+    _showMessage(context, 'Barcode label printing is available in the desktop app. Web print is not supported yet.');
+    return;
+  }
   final directory = _ensureDirectory('barcode-labels');
   final safeName = _safeFileName(product.sku, fallback: 'product');
   final file = File('${directory.path}/${safeName.isEmpty ? 'product' : safeName}-label.html');
@@ -3195,5 +3576,14 @@ Future<void> _showFormDialog(BuildContext context, {required String title, requi
 double _num(TextEditingController controller) => double.tryParse(controller.text.trim()) ?? 0;
 
 void _showMessage(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: SelectableText(message),
+      duration: const Duration(seconds: 8),
+      action: SnackBarAction(
+        label: 'Copy',
+        onPressed: () => Clipboard.setData(ClipboardData(text: message)),
+      ),
+    ),
+  );
 }
