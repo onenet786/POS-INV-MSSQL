@@ -1,0 +1,16 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="24" y="24" width="312" height="312" rx="72" fill="url(#paint0_linear)"/>
+  <path d="M102 236V132L174 90L264 132V236H102Z" stroke="white" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="136" y="158" width="100" height="31" rx="15.5" fill="#F59E0B"/>
+  <circle cx="264" cy="98" r="22" fill="white"/>
+  <text x="392" y="166" fill="#132236" font-family="Segoe UI, Arial, sans-serif" font-size="92" font-weight="800">InvPro</text>
+  <text x="398" y="230" fill="#526071" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="600" letter-spacing="2">POS-INV-MSSQL</text>
+  <path d="M398 260H776" stroke="#0E7C66" stroke-width="10" stroke-linecap="round"/>
+  <path d="M798 260H900" stroke="#F59E0B" stroke-width="10" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="paint0_linear" x1="64" y1="54" x2="330" y2="332" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B365D"/>
+      <stop offset="1" stop-color="#0E7C66"/>
+    </linearGradient>
+  </defs>
+</svg>

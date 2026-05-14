@@ -20,13 +20,18 @@ class InvProApp extends StatefulWidget {
 class _InvProAppState extends State<InvProApp> {
   final AppStore store = AppStore.seeded();
   bool isDark = false;
+  bool showingSplash = true;
   AppUser? currentUser;
   Timer? syncTimer;
+  Timer? splashTimer;
 
   @override
   void initState() {
     super.initState();
-    unawaited(WindowMode.setCashierTerminalMode(false));
+    unawaited(WindowMode.setLoginWindowMode());
+    splashTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => showingSplash = false);
+    });
     syncTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (currentUser != null) unawaited(store.tryReconnectAndSync());
     });
@@ -35,6 +40,7 @@ class _InvProAppState extends State<InvProApp> {
   @override
   void dispose() {
     syncTimer?.cancel();
+    splashTimer?.cancel();
     super.dispose();
   }
 
@@ -59,20 +65,29 @@ class _InvProAppState extends State<InvProApp> {
         ),
         home: Directionality(
           textDirection: TextDirection.ltr,
-          child: currentUser == null
-              ? LoginPage(onLogin: (user) {
-                  unawaited(WindowMode.setCashierTerminalMode(user.isCashier));
-                  setState(() => currentUser = user);
-                })
-              : ShellPage(
-                  user: currentUser!,
-                  isDark: isDark,
-                  onThemeChanged: () => setState(() => isDark = !isDark),
-                  onLogout: () {
-                    unawaited(WindowMode.setCashierTerminalMode(false));
-                    setState(() => currentUser = null);
-                  },
-                ),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 360),
+            child: showingSplash
+                ? const SplashPage(key: ValueKey('splash'))
+                : currentUser == null
+                    ? LoginPage(
+                        key: const ValueKey('login'),
+                        onLogin: (user) {
+                          unawaited(WindowMode.setWorkspaceWindowMode(lockFrame: user.isCashier));
+                          setState(() => currentUser = user);
+                        },
+                      )
+                    : ShellPage(
+                        key: const ValueKey('shell'),
+                        user: currentUser!,
+                        isDark: isDark,
+                        onThemeChanged: () => setState(() => isDark = !isDark),
+                        onLogout: () {
+                          unawaited(WindowMode.setLoginWindowMode());
+                          setState(() => currentUser = null);
+                        },
+                      ),
+          ),
         ),
       ),
     );
@@ -82,12 +97,16 @@ class _InvProAppState extends State<InvProApp> {
 class WindowMode {
   static const _channel = MethodChannel('invpro/window');
 
-  static Future<void> setCashierTerminalMode(bool enabled) async {
+  static Future<void> setLoginWindowMode() => _invoke('setLoginWindowMode');
+
+  static Future<void> setWorkspaceWindowMode({required bool lockFrame}) => _invoke('setWorkspaceWindowMode', {'lockFrame': lockFrame});
+
+  static Future<void> _invoke(String method, [Map<String, Object?> arguments = const {}]) async {
     if (!Platform.isWindows) return;
     try {
-      await _channel.invokeMethod<void>('setCashierTerminalMode', {'enabled': enabled});
+      await _channel.invokeMethod<void>(method, arguments);
     } catch (_) {
-      // Running tests or unsupported platforms can safely ignore window locking.
+      // Running tests or unsupported platforms can safely ignore window sizing.
     }
   }
 }
@@ -1373,6 +1392,116 @@ class UserScope extends InheritedWidget {
   bool updateShouldNotify(UserScope oldWidget) => oldWidget.user != user;
 }
 
+class BrandLogo extends StatelessWidget {
+  const BrandLogo({super.key, this.size = 64, this.showText = true});
+
+  final double size;
+  final bool showText;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CustomPaint(size: Size.square(size), painter: _BrandMarkPainter(colors.primary, const Color(0xFF1B365D), const Color(0xFFF59E0B))),
+        if (showText) ...[
+          const SizedBox(width: 12),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('InvPro', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900, letterSpacing: 0)),
+              Text('POS-INV-MSSQL', style: Theme.of(context).textTheme.labelLarge?.copyWith(color: colors.onSurfaceVariant, letterSpacing: 0)),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _BrandMarkPainter extends CustomPainter {
+  const _BrandMarkPainter(this.green, this.ink, this.gold);
+
+  final Color green;
+  final Color ink;
+  final Color gold;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.width / 64;
+    final radius = Radius.circular(14 * scale);
+    final rect = Offset.zero & size;
+    final background = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [ink, green],
+      ).createShader(rect);
+    canvas.drawRRect(RRect.fromRectAndRadius(rect, radius), background);
+
+    final shelfPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.2 * scale
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final path = Path()
+      ..moveTo(16 * scale, 42 * scale)
+      ..lineTo(16 * scale, 24 * scale)
+      ..lineTo(30 * scale, 16 * scale)
+      ..lineTo(48 * scale, 24 * scale)
+      ..lineTo(48 * scale, 42 * scale)
+      ..lineTo(16 * scale, 42 * scale);
+    canvas.drawPath(path, shelfPaint);
+
+    final barPaint = Paint()..color = gold;
+    canvas.drawRRect(RRect.fromLTRBR(22 * scale, 29 * scale, 42 * scale, 35 * scale, Radius.circular(3 * scale)), barPaint);
+    canvas.drawCircle(Offset(48 * scale, 18 * scale), 4.2 * scale, Paint()..color = Colors.white);
+  }
+
+  @override
+  bool shouldRepaint(covariant _BrandMarkPainter oldDelegate) => oldDelegate.green != green || oldDelegate.ink != ink || oldDelegate.gold != gold;
+}
+
+class SplashPage extends StatelessWidget {
+  const SplashPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Scaffold(
+      backgroundColor: colors.surface,
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFF8FAFC), Color(0xFFE8F4EF), Color(0xFFFFF7E6)],
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const BrandLogo(size: 84),
+              const SizedBox(height: 28),
+              SizedBox(
+                width: 180,
+                child: LinearProgressIndicator(
+                  minHeight: 4,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key, required this.onLogin});
 
@@ -1397,57 +1526,76 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 320),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                    child: const Text('IP', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                  ),
-                  const SizedBox(height: 10),
-                  Text('InvPro login', textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: email,
-                    decoration: const InputDecoration(prefixIcon: Icon(Icons.mail_outline), labelText: 'Email', border: OutlineInputBorder(), isDense: true),
-                    onSubmitted: (_) => _login(),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: password,
-                    obscureText: obscure,
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      suffixIcon: IconButton(onPressed: () => setState(() => obscure = !obscure), icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined)),
-                      labelText: 'Password',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    onSubmitted: (_) => _login(),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(onPressed: loggingIn ? null : _login, icon: const Icon(Icons.login), label: Text(loggingIn ? 'Connecting...' : 'Login')),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 6,
-                    runSpacing: 4,
+      backgroundColor: colors.surface,
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFFF8FAFC), Color(0xFFEAF5F0), Color(0xFFFFF5DE)],
+          ),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Card(
+                elevation: 8,
+                shadowColor: const Color(0xFF0F172A).withValues(alpha: .12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(28, 26, 28, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      ActionChip(visualDensity: VisualDensity.compact, label: const Text('Admin'), onPressed: () => _fill('admin@invpro.local', 'Admin@12345')),
-                      ActionChip(visualDensity: VisualDensity.compact, label: const Text('Manager'), onPressed: () => _fill('manager@invpro.local', 'Manager@12345')),
-                      ActionChip(visualDensity: VisualDensity.compact, label: const Text('Cashier'), onPressed: () => _fill('cashier@invpro.local', 'Cashier@12345')),
+                      const Center(child: BrandLogo(size: 58)),
+                      const SizedBox(height: 22),
+                      Text('Sign in to continue', textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+                      const SizedBox(height: 4),
+                      Text('Secure retail operations console', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: colors.onSurfaceVariant)),
+                      const SizedBox(height: 22),
+                      TextField(
+                        controller: email,
+                        decoration: const InputDecoration(prefixIcon: Icon(Icons.mail_outline), labelText: 'Email', border: OutlineInputBorder(), isDense: true),
+                        onSubmitted: (_) => _login(),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: password,
+                        obscureText: obscure,
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.lock_outline),
+                          suffixIcon: IconButton(onPressed: () => setState(() => obscure = !obscure), icon: Icon(obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined)),
+                          labelText: 'Password',
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onSubmitted: (_) => _login(),
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: loggingIn ? null : _login,
+                        icon: loggingIn ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.login),
+                        label: Text(loggingIn ? 'Connecting...' : 'Login'),
+                      ),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: [
+                          ActionChip(visualDensity: VisualDensity.compact, label: const Text('Admin'), onPressed: () => _fill('admin@invpro.local', 'Admin@12345')),
+                          ActionChip(visualDensity: VisualDensity.compact, label: const Text('Manager'), onPressed: () => _fill('manager@invpro.local', 'Manager@12345')),
+                          ActionChip(visualDensity: VisualDensity.compact, label: const Text('Cashier'), onPressed: () => _fill('cashier@invpro.local', 'Cashier@12345')),
+                        ],
+                      ),
                     ],
                   ),
-                ],
+                ),
               ),
             ),
           ),

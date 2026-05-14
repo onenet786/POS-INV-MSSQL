@@ -25,7 +25,8 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
-  void SetCashierTerminalMode(bool enabled);
+  void SetLoginWindowMode();
+  void SetWorkspaceWindowMode(bool lock_frame);
 
   // The project to run.
   flutter::DartProject project_;

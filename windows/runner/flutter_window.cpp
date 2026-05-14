@@ -36,17 +36,22 @@ bool FlutterWindow::OnCreate() {
   window_channel_->SetMethodCallHandler(
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-        if (call.method_name() == "setCashierTerminalMode") {
-          bool enabled = false;
+        if (call.method_name() == "setLoginWindowMode") {
+          SetLoginWindowMode();
+          result->Success();
+          return;
+        }
+        if (call.method_name() == "setWorkspaceWindowMode") {
+          bool lock_frame = false;
           if (const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments())) {
-            const auto enabled_it = arguments->find(flutter::EncodableValue("enabled"));
-            if (enabled_it != arguments->end()) {
-              if (const auto* enabled_value = std::get_if<bool>(&enabled_it->second)) {
-                enabled = *enabled_value;
+            const auto lock_it = arguments->find(flutter::EncodableValue("lockFrame"));
+            if (lock_it != arguments->end()) {
+              if (const auto* lock_value = std::get_if<bool>(&lock_it->second)) {
+                lock_frame = *lock_value;
               }
             }
           }
-          SetCashierTerminalMode(enabled);
+          SetWorkspaceWindowMode(lock_frame);
           result->Success();
           return;
         }
@@ -99,25 +104,50 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
 }
 
-void FlutterWindow::SetCashierTerminalMode(bool enabled) {
+void FlutterWindow::SetLoginWindowMode() {
   HWND hwnd = GetHandle();
   if (!hwnd) {
     return;
   }
 
   LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-  if (enabled) {
+  style |= WS_THICKFRAME;
+  style |= WS_MAXIMIZEBOX;
+  SetWindowLongPtr(hwnd, GWL_STYLE, style);
+
+  ShowWindow(hwnd, SW_RESTORE);
+
+  HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO monitor_info{};
+  monitor_info.cbSize = sizeof(MONITORINFO);
+  GetMonitorInfo(monitor, &monitor_info);
+  const int width = 520;
+  const int height = 640;
+  const RECT work_area = monitor_info.rcWork;
+  const int x = work_area.left + ((work_area.right - work_area.left) - width) / 2;
+  const int y = work_area.top + ((work_area.bottom - work_area.top) - height) / 2;
+
+  SetWindowPos(hwnd, nullptr, x, y, width, height,
+               SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
+void FlutterWindow::SetWorkspaceWindowMode(bool lock_frame) {
+  HWND hwnd = GetHandle();
+  if (!hwnd) {
+    return;
+  }
+
+  LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  if (lock_frame) {
     style &= ~WS_THICKFRAME;
     style &= ~WS_MAXIMIZEBOX;
-    SetWindowLongPtr(hwnd, GWL_STYLE, style);
-    ShowWindow(hwnd, SW_MAXIMIZE);
   } else {
     style |= WS_THICKFRAME;
     style |= WS_MAXIMIZEBOX;
-    SetWindowLongPtr(hwnd, GWL_STYLE, style);
-    ShowWindow(hwnd, SW_RESTORE);
   }
+  SetWindowLongPtr(hwnd, GWL_STYLE, style);
 
   SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+  ShowWindow(hwnd, SW_MAXIMIZE);
 }
