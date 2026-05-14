@@ -1,0 +1,19 @@
+         POS-INV-MSSQL          
+*** DUPLICATE REPRINT ***
+--------------------------------
+Invoice        INV-1778775769675
+Date            2026-05-14 21:22
+Customer        Walk-in Customer
+Payment                     Cash
+--------------------------------
+Thermal Receipt Roll
+11 x PKR 360           PKR 3,960
+--------------------------------
+Paid                   PKR 3,960
+Due                        PKR 0
+--------------------------------
+GRAND TOTAL            PKR 3,960
+--------------------------------
+Thank you
+
+

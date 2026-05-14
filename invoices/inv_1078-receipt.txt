@@ -1,25 +1,23 @@
          POS-INV-MSSQL          
 --------------------------------
-Invoice                 INV-1076
-Date            2026-05-14 21:14
+Invoice                 INV-1078
+Date            2026-05-14 21:23
 Customer        Walk-in Customer
 Payment                     Cash
 --------------------------------
 Bluetooth Headset Pro
-3 x PKR 7,500         PKR 22,500
-Oven
-3 x PKR 25,000        PKR 75,000
+1 x PKR 7,500          PKR 7,500
 pencil
-3 x PKR 50               PKR 150
+1 x PKR 50                PKR 50
 Thermal Receipt Roll
-3 x PKR 360            PKR 1,080
+1 x PKR 360              PKR 360
 Samsung USB-C Charger 25W
-3 x PKR 2,800          PKR 8,400
+1 x PKR 2,800          PKR 2,800
 --------------------------------
-Paid                 PKR 107,130
+Paid                  PKR 10,710
 Due                        PKR 0
 --------------------------------
-GRAND TOTAL          PKR 107,130
+GRAND TOTAL           PKR 10,710
 --------------------------------
 Thank you
 
