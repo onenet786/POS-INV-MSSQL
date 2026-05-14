@@ -208,8 +208,10 @@ class AppStore extends ChangeNotifier {
   final List<PurchaseOrder> purchases;
   final List<Expense> expenses;
   final List<Invoice> invoices;
+  final Map<int, List<InvoiceLine>> invoiceLinesByInvoiceId = {};
   final List<StockMovement> movements;
   final List<SyncJob> pendingSyncJobs = [];
+  String receiptPrinterName = '';
 
   int _nextProductId = 10;
   int _nextPartyId = 10;
@@ -268,6 +270,9 @@ class AppStore extends ChangeNotifier {
       invoices
         ..clear()
         ..addAll(_list(data['invoices']).map(_invoiceFromJson));
+      invoiceLinesByInvoiceId
+        ..clear()
+        ..addAll(_invoiceLinesMapFromJson(data['invoiceLinesByInvoiceId']));
       movements
         ..clear()
         ..addAll(_list(data['movements']).map(_movementFromJson));
@@ -276,6 +281,7 @@ class AppStore extends ChangeNotifier {
         ..addAll(_list(data['pendingSyncJobs']).map(SyncJob.fromJson));
       lastLoginEmail = data['lastLoginEmail']?.toString();
       lastLoginPassword = data['lastLoginPassword']?.toString();
+      receiptPrinterName = data['receiptPrinterName']?.toString() ?? '';
       _refreshNextIds();
     } catch (_) {
       final backup = File('${file.path}.bad');
@@ -293,10 +299,12 @@ class AppStore extends ChangeNotifier {
       'purchases': purchases.map(_purchaseToJson).toList(),
       'expenses': expenses.map(_expenseToJson).toList(),
       'invoices': invoices.map(_invoiceToJson).toList(),
+      'invoiceLinesByInvoiceId': invoiceLinesByInvoiceId.map((key, value) => MapEntry(key.toString(), value.map(_invoiceLineToJson).toList())),
       'movements': movements.map(_movementToJson).toList(),
       'pendingSyncJobs': pendingSyncJobs.map((job) => job.toJson()).toList(),
       'lastLoginEmail': lastLoginEmail,
       'lastLoginPassword': lastLoginPassword,
+      'receiptPrinterName': receiptPrinterName,
     };
     _recordsFile.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
   }
@@ -338,6 +346,7 @@ class AppStore extends ChangeNotifier {
       );
       await _processPendingSyncJobs();
       await loadSqlData();
+      await loadSettings();
       return user;
     } catch (error) {
       sqlConnected = false;
@@ -392,6 +401,34 @@ class AppStore extends ChangeNotifier {
     _refreshNextIds();
     _saveToDisk();
     notifyListeners();
+  }
+
+  Future<void> loadSettings() async {
+    if (!sqlConnected) return;
+    try {
+      final settings = await api.getMap('/settings');
+      receiptPrinterName = _string(settings, 'receiptPrinterName', receiptPrinterName);
+      _saveToDisk();
+      notifyListeners();
+    } catch (error) {
+      _setSyncStatus('Printer settings load failed: ${_shortError(error)}');
+    }
+  }
+
+  Future<void> saveReceiptPrinterName(String printerName) async {
+    receiptPrinterName = printerName.trim();
+    _saveToDisk();
+    notifyListeners();
+    if (!sqlConnected) {
+      _setSyncStatus(receiptPrinterName.isEmpty ? 'Receipt printer cleared locally' : 'Receipt printer saved locally');
+      return;
+    }
+    try {
+      await api.put('/settings/receipt-printer-name', {'value': receiptPrinterName});
+      _setSyncStatus(receiptPrinterName.isEmpty ? 'Receipt printer set to Windows default' : 'Receipt printer saved to SQL Server');
+    } catch (error) {
+      _setSyncStatus('Printer setting saved locally; SQL save failed: ${_shortError(error)}');
+    }
   }
 
   Future<void> tryReconnectAndSync() async {
@@ -643,6 +680,7 @@ class AppStore extends ChangeNotifier {
     );
     _nextInvoiceId++;
     invoices.insert(0, invoice);
+    invoiceLinesByInvoiceId[invoice.id] = List<InvoiceLine>.of(lines);
     for (final line in lines) {
       final index = products.indexWhere((product) => product.id == line.product.id);
       if (index != -1) {
@@ -824,6 +862,22 @@ class AppStore extends ChangeNotifier {
   void _replaceInvoice(int oldId, Invoice invoice) {
     final index = invoices.indexWhere((item) => item.id == oldId);
     if (index != -1) invoices[index] = invoice;
+    if (oldId != invoice.id && invoiceLinesByInvoiceId.containsKey(oldId)) {
+      invoiceLinesByInvoiceId[invoice.id] = invoiceLinesByInvoiceId.remove(oldId)!;
+    }
+  }
+
+  Future<List<InvoiceLine>> invoiceLinesFor(Invoice invoice) async {
+    final localLines = invoiceLinesByInvoiceId[invoice.id];
+    if (localLines != null && localLines.isNotEmpty) return localLines;
+    if (!sqlConnected) return const [];
+    final data = await api.getMap('/invoices/${invoice.id}');
+    final lines = _list(data['items']).map(_apiInvoiceLineFromJson).toList();
+    if (lines.isNotEmpty) {
+      invoiceLinesByInvoiceId[invoice.id] = lines;
+      _saveToDisk();
+    }
+    return lines;
   }
 
   int? _customerIdByName(String name) {
@@ -981,6 +1035,17 @@ Map<String, dynamic> _invoiceLineToJson(InvoiceLine line) => {
       'quantity': line.quantity,
     };
 
+Map<int, List<InvoiceLine>> _invoiceLinesMapFromJson(Object? value) {
+  if (value is! Map) return {};
+  final result = <int, List<InvoiceLine>>{};
+  for (final entry in value.entries) {
+    final invoiceId = int.tryParse(entry.key.toString());
+    if (invoiceId == null) continue;
+    result[invoiceId] = _list(entry.value).map(_invoiceLineFromJson).toList();
+  }
+  return result;
+}
+
 StockMovement _movementFromJson(Map<String, dynamic> json) {
   return StockMovement(id: _int(json, 'id'), product: _string(json, 'product'), type: _string(json, 'type', 'In'), quantity: _double(json, 'quantity'), notes: _string(json, 'notes'));
 }
@@ -1024,6 +1089,23 @@ Invoice _apiInvoiceFromJson(Map<String, dynamic> json) {
     discountAmount: _double(json, 'DiscountAmount'),
     method: 'SQL',
     createdAt: DateTime.tryParse(_string(json, 'CreatedAt')) ?? DateTime.now(),
+  );
+}
+
+InvoiceLine _apiInvoiceLineFromJson(Map<String, dynamic> json) {
+  return InvoiceLine(
+    product: Product(
+      id: _int(json, 'ProductId'),
+      name: _string(json, 'ProductName'),
+      sku: _string(json, 'SKU'),
+      barcode: _string(json, 'Barcode'),
+      salePrice: _double(json, 'UnitPrice'),
+      purchasePrice: 0,
+      stock: 0,
+      minStock: 0,
+      category: '',
+    ),
+    quantity: _double(json, 'Quantity'),
   );
 }
 
@@ -1785,6 +1867,40 @@ class _PosViewState extends State<PosView> {
                           icon: const Icon(Icons.print_outlined),
                           label: const Text('Post & print (F9)'),
                         ),
+                        const SizedBox(height: 8),
+                        TextButton.icon(
+                          onPressed: () => _openPrinterDialog(store),
+                          icon: const Icon(Icons.settings_outlined),
+                          label: Text(store.receiptPrinterName.isEmpty ? 'Printer: Windows default' : 'Printer: ${store.receiptPrinterName}'),
+                        ),
+                        const SizedBox(height: 12),
+                        const Divider(height: 1),
+                        const SizedBox(height: 12),
+                        Text('Recent invoices', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 6),
+                        for (final invoice in store.invoices.take(5))
+                          ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.receipt_long_outlined),
+                            title: Text(invoice.number),
+                            subtitle: Text('${invoice.customer}  |  ${money.format(invoice.total)}'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: 'Open PDF',
+                                  onPressed: () => unawaited(_openInvoicePdf(store, invoice)),
+                                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: 'Duplicate reprint',
+                                  onPressed: () => unawaited(_reprintInvoice(store, invoice)),
+                                  icon: const Icon(Icons.print_outlined),
+                                ),
+                              ],
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -2028,10 +2144,73 @@ class _PosViewState extends State<PosView> {
       selectedLineIndex = 0;
     });
     if (printAfterPost) {
-      unawaited(_exportInvoice(context, invoice, lines, printAfterExport: true));
+      unawaited(_printInvoiceDirect(context, invoice, lines, printerName: store.receiptPrinterName));
     } else {
       _showMessage(context, 'Invoice ${invoice.number} posted');
     }
+  }
+
+  Future<void> _reprintInvoice(AppStore store, Invoice invoice) async {
+    try {
+      final lines = await store.invoiceLinesFor(invoice);
+      if (!mounted) return;
+      if (lines.isEmpty) {
+        _showMessage(context, 'No item details found for ${invoice.number}');
+        return;
+      }
+      await _printInvoiceDirect(context, invoice, lines, printerName: store.receiptPrinterName, duplicate: true);
+    } catch (error) {
+      if (!mounted) return;
+      _showMessage(context, 'Reprint failed: ${_shortError(error)}');
+    }
+  }
+
+  Future<void> _openInvoicePdf(AppStore store, Invoice invoice) async {
+    try {
+      final lines = await store.invoiceLinesFor(invoice);
+      if (!mounted) return;
+      if (lines.isEmpty) {
+        _showMessage(context, 'No item details found for ${invoice.number}');
+        return;
+      }
+      await _exportInvoice(context, invoice, lines, printAfterExport: false);
+    } catch (error) {
+      if (!mounted) return;
+      _showMessage(context, 'Invoice PDF failed: ${_shortError(error)}');
+    }
+  }
+
+  Future<void> _openPrinterDialog(AppStore store) async {
+    final controller = TextEditingController(text: store.receiptPrinterName);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Receipt printer'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.print_outlined),
+              labelText: 'Windows printer name',
+              helperText: 'Leave empty to use the Windows default printer',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => Navigator.pop(dialogContext, controller.text),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            TextButton(onPressed: () => Navigator.pop(dialogContext, ''), child: const Text('Use default')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text), child: const Text('Save')),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    if (value == null || !mounted) return;
+    await store.saveReceiptPrinterName(value);
+    if (!mounted) return;
+    _showMessage(context, store.syncStatus);
   }
 }
 
@@ -2665,9 +2844,7 @@ Future<void> _exportInvoice(BuildContext context, Invoice invoice, List<InvoiceL
     ],
   );
   if (printAfterExport) {
-    final printFile = File('${directory.path}/$safeName-print.html');
-    printFile.writeAsStringSync(_invoiceHtml(invoice, lines, autoPrint: true));
-    await _openFile(printFile);
+    await _printInvoiceDirect(context, invoice, lines, printerName: StoreScope.of(context).receiptPrinterName);
   } else {
     await _openFile(pdfFile);
   }
@@ -2675,70 +2852,149 @@ Future<void> _exportInvoice(BuildContext context, Invoice invoice, List<InvoiceL
   _showMessage(context, 'Invoice ${invoice.number} saved: ${pdfFile.path}');
 }
 
-String _invoiceHtml(Invoice invoice, List<InvoiceLine> lines, {required bool autoPrint}) {
+Future<void> _printInvoiceDirect(BuildContext context, Invoice invoice, List<InvoiceLine> lines, {required String printerName, bool duplicate = false}) async {
+  final directory = _ensureDirectory('invoices');
+  final safeName = _safeFileName(invoice.number, fallback: 'invoice');
+  final receiptFile = File('${directory.path}/$safeName-receipt.txt');
+  receiptFile.writeAsStringSync(_invoiceReceiptText(invoice, lines, duplicate: duplicate), encoding: utf8);
+
+  if (!Platform.isWindows) {
+    await _openFile(receiptFile);
+    if (!context.mounted) return;
+    _showMessage(context, 'Receipt opened: ${receiptFile.path}');
+    return;
+  }
+
+  final scriptFile = File('${directory.path}/print-receipt.ps1');
+  scriptFile.writeAsStringSync(r'''
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$ReceiptPath,
+  [string]$PrinterName = ""
+)
+
+$ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($ReceiptPath) -or -not [System.IO.File]::Exists($ReceiptPath)) {
+  throw "Receipt file was not found: $ReceiptPath"
+}
+Add-Type -AssemblyName System.Drawing
+$script:receiptLines = [System.IO.File]::ReadAllLines($ReceiptPath)
+$script:receiptFont = New-Object System.Drawing.Font("Consolas", 11.5, [System.Drawing.FontStyle]::Regular)
+$doc = New-Object System.Drawing.Printing.PrintDocument
+$doc.DocumentName = "POS Receipt"
+if (-not [string]::IsNullOrWhiteSpace($PrinterName)) {
+  $doc.PrinterSettings.PrinterName = $PrinterName
+}
+$script:index = 0
+$doc.add_PrintPage({
+  param($sender, $eventArgs)
+  $x = $eventArgs.MarginBounds.Left
+  $y = $eventArgs.MarginBounds.Top
+  $lineHeight = $script:receiptFont.GetHeight($eventArgs.Graphics) + 5
+  while ($script:index -lt $script:receiptLines.Length) {
+    $eventArgs.Graphics.DrawString($script:receiptLines[$script:index], $script:receiptFont, [System.Drawing.Brushes]::Black, $x, $y)
+    $y += $lineHeight
+    $script:index++
+    if ($y + $lineHeight -gt $eventArgs.MarginBounds.Bottom) {
+      $eventArgs.HasMorePages = $true
+      return
+    }
+  }
+  $eventArgs.HasMorePages = $false
+})
+$doc.Print()
+''',
+      encoding: utf8);
+
+  final result = await Process.run('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    scriptFile.absolute.path,
+    receiptFile.absolute.path,
+    printerName.trim(),
+  ]);
+
+  if (!context.mounted) return;
+  if (result.exitCode == 0) {
+    final target = printerName.trim().isEmpty ? 'default printer' : printerName.trim();
+    _showMessage(context, '${duplicate ? 'Duplicate receipt' : 'Receipt'} sent to $target');
+  } else {
+    final stderr = result.stderr.toString().trim();
+    final error = stderr.isNotEmpty ? stderr : 'Windows print command failed';
+    _showMessage(context, 'Print failed: ${_shortError(error)}');
+  }
+}
+
+String _invoiceReceiptText(Invoice invoice, List<InvoiceLine> lines, {required bool duplicate}) {
+  const width = 32;
   final money = intl.NumberFormat.currency(symbol: 'PKR ', decimalDigits: 0);
   final date = intl.DateFormat('yyyy-MM-dd HH:mm').format(invoice.createdAt);
-  final rows = lines
-      .map(
-        (line) => '''
-        <tr>
-          <td>${_html(line.product.name)}<br><small>${_html(line.product.sku)}</small></td>
-          <td>${line.quantity.toStringAsFixed(0)}</td>
-          <td>${_html(money.format(line.product.salePrice))}</td>
-          <td>${_html(money.format(line.total))}</td>
-        </tr>
-        ''',
-      )
-      .join();
-  return '''
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Invoice ${_html(invoice.number)}</title>
-  <style>
-    @page { size: A4; margin: 12mm; }
-    body { font-family: Arial, sans-serif; color: #17201d; }
-    header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #17201d; padding-bottom: 12px; margin-bottom: 18px; }
-    h1 { margin: 0; font-size: 26px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border-bottom: 1px solid #ddd; padding: 9px; text-align: left; }
-    th { background: #eef6f3; }
-    td:nth-child(2), td:nth-child(3), td:nth-child(4), .totals td:last-child { text-align: right; }
-    small { color: #63716d; }
-    .meta { text-align: right; line-height: 1.6; }
-    .totals { margin-left: auto; width: 320px; margin-top: 18px; }
-    .strong td { font-weight: 700; font-size: 16px; }
-  </style>
-</head>
-<body>
-  <header>
-    <div>
-      <h1>Invoice</h1>
-      <p>${_html(invoice.customer)}</p>
-    </div>
-    <div class="meta">
-      <div><strong>${_html(invoice.number)}</strong></div>
-      <div>$date</div>
-      <div>${_html(invoice.method)}</div>
-    </div>
-  </header>
-  <table>
-    <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Total</th></tr></thead>
-    <tbody>$rows</tbody>
-  </table>
-  <table class="totals">
-    ${invoice.discountAmount > 0 ? '<tr><td>Discount</td><td>-${_html(money.format(invoice.discountAmount))}</td></tr>' : ''}
-    ${invoice.tendered > invoice.paid ? '<tr><td>Tendered</td><td>${_html(money.format(invoice.tendered))}</td></tr>' : ''}
-    ${invoice.changeDue > 0 ? '<tr><td>Returned change</td><td>${_html(money.format(invoice.changeDue))}</td></tr>' : ''}
-    <tr><td>Paid</td><td>${_html(money.format(invoice.paid))}</td></tr>
-    <tr><td>Due</td><td>${_html(money.format(invoice.due))}</td></tr>
-    <tr class="strong"><td>Grand total</td><td>${_html(money.format(invoice.total))}</td></tr>
-  </table>
-  ${autoPrint ? '<script>window.addEventListener("load", () => window.print());</script>' : ''}
-</body>
-</html>
-''';
+  final buffer = StringBuffer();
+  void line([String value = '']) => buffer.writeln(value.length > width ? value.substring(0, width) : value);
+  void rule() => line('-' * width);
+  void pair(String left, String right) {
+    final cleanLeft = left.length > width - 2 ? left.substring(0, width - 2) : left;
+    final space = (width - cleanLeft.length - right.length).clamp(1, width).toInt();
+    line('$cleanLeft${' ' * space}$right');
+  }
+
+  line('POS-INV-MSSQL'.padLeft(22).padRight(width));
+  if (duplicate) line('*** DUPLICATE REPRINT ***');
+  rule();
+  pair('Invoice', invoice.number);
+  pair('Date', date);
+  pair('Customer', invoice.customer);
+  pair('Payment', invoice.method);
+  rule();
+  for (final item in lines) {
+    for (final part in _wrapReceiptText(item.product.name, width)) {
+      line(part);
+    }
+    final quantity = item.quantity.toStringAsFixed(0);
+    pair('$quantity x ${money.format(item.product.salePrice)}', money.format(item.total));
+  }
+  rule();
+  if (invoice.discountAmount > 0) pair('Discount', '-${money.format(invoice.discountAmount)}');
+  if (invoice.tendered > invoice.paid) pair('Tendered', money.format(invoice.tendered));
+  if (invoice.changeDue > 0) pair('Change', money.format(invoice.changeDue));
+  pair('Paid', money.format(invoice.paid));
+  pair('Due', money.format(invoice.due));
+  rule();
+  pair('GRAND TOTAL', money.format(invoice.total));
+  rule();
+  line('Thank you');
+  line();
+  line();
+  return buffer.toString();
+}
+
+List<String> _wrapReceiptText(String text, int width) {
+  final words = text.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty);
+  final lines = <String>[];
+  var current = '';
+  for (final word in words) {
+    if (word.length > width) {
+      if (current.isNotEmpty) {
+        lines.add(current);
+        current = '';
+      }
+      for (var index = 0; index < word.length; index += width) {
+        lines.add(word.substring(index, (index + width).clamp(0, word.length).toInt()));
+      }
+      continue;
+    }
+    final next = current.isEmpty ? word : '$current $word';
+    if (next.length > width) {
+      lines.add(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current.isNotEmpty) lines.add(current);
+  return lines.isEmpty ? [''] : lines;
 }
 
 void _writeSimplePdf({required File file, required String title, required List<String> headings, required List<List<String>> rows}) {

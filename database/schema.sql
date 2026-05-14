@@ -64,6 +64,16 @@ CREATE TABLE dbo.Users (
     CONSTRAINT UQ_Users_Email UNIQUE (Email)
 );
 
+CREATE TABLE dbo.AppSettings (
+    SettingId INT IDENTITY(1,1) PRIMARY KEY,
+    TenantId INT NOT NULL,
+    SettingKey NVARCHAR(120) NOT NULL,
+    SettingValue NVARCHAR(1000) NOT NULL DEFAULT '',
+    UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT FK_AppSettings_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants(TenantId),
+    CONSTRAINT UQ_AppSettings_Key UNIQUE (TenantId, SettingKey)
+);
+
 CREATE TABLE dbo.Categories (
     CategoryId INT IDENTITY(1,1) PRIMARY KEY,
     TenantId INT NOT NULL,
@@ -339,4 +349,3 @@ BEGIN
     COMMIT TRANSACTION;
 END
 GO
-

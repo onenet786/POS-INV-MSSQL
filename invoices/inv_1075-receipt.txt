@@ -1,0 +1,19 @@
+         POS-INV-MSSQL          
+*** DUPLICATE REPRINT ***
+--------------------------------
+Invoice                 INV-1075
+Date            2026-05-14 20:45
+Customer        Walk-in Customer
+Payment                     Cash
+--------------------------------
+Bluetooth Headset Pro
+1 x PKR 7,500          PKR 7,500
+--------------------------------
+Paid                   PKR 7,500
+Due                        PKR 0
+--------------------------------
+GRAND TOTAL            PKR 7,500
+--------------------------------
+Thank you
+
+

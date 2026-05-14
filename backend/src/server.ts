@@ -18,6 +18,7 @@ import { expensesRouter } from './routes/expenses.js';
 import { usersRouter } from './routes/users.js';
 import { referenceRouter } from './routes/reference.js';
 import { reportsRouter } from './routes/reports.js';
+import { settingsRouter } from './routes/settings.js';
 import { openApiSpec } from './openapi.js';
 
 const app = express();
@@ -42,6 +43,7 @@ app.use('/api/inventory', inventoryRouter);
 app.use('/api/invoices', invoicesRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api/reference', referenceRouter);
+app.use('/api/settings', settingsRouter);
 
 io.on('connection', (socket) => {
   socket.emit('connected', { message: 'Realtime inventory channel ready' });

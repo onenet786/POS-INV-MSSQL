@@ -16,6 +16,9 @@ VALUES (@TenantId, @BranchId, 'Main Warehouse', 'WH-MAIN');
 
 DECLARE @WarehouseId INT = SCOPE_IDENTITY();
 
+INSERT INTO dbo.AppSettings (TenantId, SettingKey, SettingValue)
+VALUES (@TenantId, 'receiptPrinterName', '');
+
 INSERT INTO dbo.Roles (TenantId, Name, Permissions)
 VALUES
 (@TenantId, 'Admin', '["*"]'),
