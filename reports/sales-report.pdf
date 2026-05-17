@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 488 >>
+<< /Length 1855 >>
 stream
 BT
 /F1 16 Tf
@@ -22,10 +22,31 @@ BT
 0 -24 Td () Tj
 T* (Name   |   Quantity / Status   |   Amount / Detail) Tj
 T* (--------------------------------------------------------------------------------------------) Tj
-T* (INV-10493   |   Walk-in Customer   |   PKR 360) Tj
-T* (INV-10492   |   Walk-in Customer   |   PKR 9,860) Tj
-T* (INV-10491   |   Walk-in Customer   |   PKR 1,800) Tj
-T* (INV-10490   |   Pharmacy Branch   |   PKR 12,626) Tj
+T* (INV-1077   |   Walk-in Customer   |   PKR 35,710) Tj
+T* (INV-1076   |   Walk-in Customer   |   PKR 3,160) Tj
+T* (INV-1075   |   Walk-in Customer   |   PKR 7,500) Tj
+T* (INV-1074   |   Walk-in Customer   |   PKR 35,710) Tj
+T* (INV-1778771822664   |   Walk-in Customer   |   PKR 35,710) Tj
+T* (INV-1778771726760   |   Walk-in Customer   |   PKR 2,800) Tj
+T* (INV-1778771443746   |   Walk-in Customer   |   PKR 3,160) Tj
+T* (INV-1778769211583   |   Walk-in Customer   |   PKR 7,500) Tj
+T* (INV-1778768726554   |   Walk-in Customer   |   PKR 7,500) Tj
+T* (INV-1778610416286   |   Walk-in Customer   |   PKR 2,800) Tj
+T* (INV-1778610405442   |   Walk-in Customer   |   PKR 360) Tj
+T* (INV-1778602002137   |   Walk-in Customer   |   PKR 3,160) Tj
+T* (INV-1778598221486   |   Walk-in Customer   |   PKR 360) Tj
+T* (INV-1778598207936   |   Walk-in Customer   |   PKR 2,800) Tj
+T* (INV-1778598031394   |   Walk-in Customer   |   PKR 35,660) Tj
+T* (INV-1778593104437   |   Walk-in Customer   |   PKR 25,000) Tj
+T* (INV-1778593104265   |   Walk-in Customer   |   PKR 2,800) Tj
+T* (INV-1778593104103   |   Walk-in Customer   |   PKR 360) Tj
+T* (INV-1778593103932   |   Walk-in Customer   |   PKR 9,860) Tj
+T* (INV-1778593103749   |   Walk-in Customer   |   PKR 1,800) Tj
+T* (INV-1778529881942   |   Walk-in Customer   |   PKR 25,000) Tj
+T* (INV-1778529507300   |   Walk-in Customer   |   PKR 25,000) Tj
+T* (INV-1778526156559   |   Walk-in Customer   |   PKR 25,000) Tj
+T* (INV-1778526097756   |   Walk-in Customer   |   PKR 7,500) Tj
+T* (INV-1778520871045   |   Walk-in Customer   |   PKR 186,500) Tj
 /F1 8 Tf
 0 -24 Td
 (Page 1 of 1) Tj
@@ -43,5 +64,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-850
+2218
 %%EOF

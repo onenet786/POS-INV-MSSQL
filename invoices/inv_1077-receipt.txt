@@ -1,20 +1,25 @@
          POS-INV-MSSQL          
-*** DUPLICATE REPRINT ***
 --------------------------------
-Invoice                 INV-1076
-Date            2026-05-14 21:07
+Invoice                 INV-1077
+Date            2026-05-17 22:07
 Customer        Walk-in Customer
-Payment                     Card
+Payment                     Cash
 --------------------------------
 Thermal Receipt Roll
 1 x PKR 360              PKR 360
+Bluetooth Headset Pro
+1 x PKR 7,500          PKR 7,500
+pencil
+1 x PKR 50                PKR 50
+Oven
+1 x PKR 25,000        PKR 25,000
 Samsung USB-C Charger 25W
 1 x PKR 2,800          PKR 2,800
 --------------------------------
-Paid                   PKR 3,160
+Paid                  PKR 35,710
 Due                        PKR 0
 --------------------------------
-GRAND TOTAL            PKR 3,160
+GRAND TOTAL           PKR 35,710
 --------------------------------
 Thank you
 
