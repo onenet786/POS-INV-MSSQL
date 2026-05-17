@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' as intl;
 
@@ -102,7 +103,7 @@ class WindowMode {
   static Future<void> setWorkspaceWindowMode({required bool lockFrame}) => _invoke('setWorkspaceWindowMode', {'lockFrame': lockFrame});
 
   static Future<void> _invoke(String method, [Map<String, Object?> arguments = const {}]) async {
-    if (!Platform.isWindows) return;
+    if (kIsWeb || !Platform.isWindows) return;
     try {
       await _channel.invokeMethod<void>(method, arguments);
     } catch (_) {
@@ -130,7 +131,7 @@ class ApiClient {
 
   final String baseUrl;
   String? token;
-  final HttpClient _client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+  HttpClient? _client;
 
   Future<Map<String, dynamic>> login(String email, String password) async {
     final data = await post('/auth/login', {'email': email, 'password': password}, auth: false);
@@ -164,7 +165,9 @@ class ApiClient {
   }
 
   Future<Object?> _request(String method, String path, {Map<String, dynamic>? body, bool auth = true}) async {
-    final request = await _client.openUrl(method, Uri.parse('$baseUrl$path'));
+    if (kIsWeb) throw UnsupportedError('API sync is disabled in web preview');
+    final client = _client ??= HttpClient()..connectionTimeout = const Duration(seconds: 3);
+    final request = await client.openUrl(method, Uri.parse('$baseUrl$path'));
     request.headers.contentType = ContentType.json;
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
     if (auth && token != null) request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
@@ -183,10 +186,10 @@ class ApiClient {
 class AppStore extends ChangeNotifier {
   AppStore.seeded()
       : products = [
-          Product(id: 1, name: 'USB-C Charger 25W', sku: 'CHG-25W', barcode: '89010001', salePrice: 2800, purchasePrice: 1900, stock: 42, minStock: 12, category: 'Electronics'),
-          Product(id: 2, name: 'Bluetooth Headset Pro', sku: 'AUD-BT-PRO', barcode: '89010002', salePrice: 5500, purchasePrice: 3900, stock: 18, minStock: 8, category: 'Electronics'),
-          Product(id: 3, name: 'Pain Relief Tablets', sku: 'MED-PRT-20', barcode: '89010003', salePrice: 1200, purchasePrice: 780, stock: 6, minStock: 20, category: 'Pharmacy'),
-          Product(id: 4, name: 'Thermal Receipt Roll', sku: 'POS-ROLL-80', barcode: '89010004', salePrice: 360, purchasePrice: 230, stock: 120, minStock: 30, category: 'POS Supplies'),
+          Product(id: 1, name: 'USB-C Charger 25W', sku: 'CHG-25W', barcode: '89010001', salePrice: 2800, purchasePrice: 1900, stock: 42, minStock: 12, category: 'Electronics', posPriority: 1),
+          Product(id: 2, name: 'Bluetooth Headset Pro', sku: 'AUD-BT-PRO', barcode: '89010002', salePrice: 5500, purchasePrice: 3900, stock: 18, minStock: 8, category: 'Electronics', posPriority: 2),
+          Product(id: 3, name: 'Pain Relief Tablets', sku: 'MED-PRT-20', barcode: '89010003', salePrice: 1200, purchasePrice: 780, stock: 6, minStock: 20, category: 'Pharmacy', posPriority: 3),
+          Product(id: 4, name: 'Thermal Receipt Roll', sku: 'POS-ROLL-80', barcode: '89010004', salePrice: 360, purchasePrice: 230, stock: 120, minStock: 30, category: 'POS Supplies', posPriority: 4),
         ],
         customers = [
           Party(id: 1, name: 'Walk-in Customer', phone: '-', email: '', balance: 0),
@@ -231,6 +234,7 @@ class AppStore extends ChangeNotifier {
   final List<StockMovement> movements;
   final List<SyncJob> pendingSyncJobs = [];
   String receiptPrinterName = '';
+  BranchProfile activeBranch = const BranchProfile(id: 1, name: 'Main Branch', code: 'MAIN', type: 'Retail');
 
   int _nextProductId = 10;
   int _nextPartyId = 10;
@@ -248,6 +252,7 @@ class AppStore extends ChangeNotifier {
   bool _syncing = false;
 
   File get _recordsFile {
+    if (kIsWeb) return File('invpro_records.json');
     final appData = Platform.environment['APPDATA'];
     if (appData != null && appData.isNotEmpty) {
       final directory = Directory('$appData\\InvPro');
@@ -264,6 +269,7 @@ class AppStore extends ChangeNotifier {
   }
 
   void _loadFromDisk() {
+    if (kIsWeb) return;
     final file = _recordsFile;
     if (!file.existsSync()) return;
     try {
@@ -301,6 +307,7 @@ class AppStore extends ChangeNotifier {
       lastLoginEmail = data['lastLoginEmail']?.toString();
       lastLoginPassword = data['lastLoginPassword']?.toString();
       receiptPrinterName = data['receiptPrinterName']?.toString() ?? '';
+      activeBranch = BranchProfile.fromJson(Map<String, dynamic>.from((data['activeBranch'] as Map?) ?? const {}));
       _refreshNextIds();
     } catch (_) {
       final backup = File('${file.path}.bad');
@@ -310,6 +317,7 @@ class AppStore extends ChangeNotifier {
   }
 
   void _saveToDisk() {
+    if (kIsWeb) return;
     final data = {
       'products': products.map(_productToJson).toList(),
       'customers': customers.map(_partyToJson).toList(),
@@ -324,6 +332,7 @@ class AppStore extends ChangeNotifier {
       'lastLoginEmail': lastLoginEmail,
       'lastLoginPassword': lastLoginPassword,
       'receiptPrinterName': receiptPrinterName,
+      'activeBranch': activeBranch.toJson(),
     };
     _recordsFile.writeAsStringSync(const JsonEncoder.withIndent('  ').convert(data));
   }
@@ -362,6 +371,14 @@ class AppStore extends ChangeNotifier {
         email: _string(apiUser, 'email'),
         role: _string(apiUser, 'role', 'Cashier'),
         active: true,
+        branchId: _int(apiUser, 'branchId', 1),
+        branchType: _string(apiUser, 'branchType', 'Retail'),
+      );
+      activeBranch = BranchProfile(
+        id: user.branchId ?? _int(apiUser, 'branchId', 1),
+        name: _string(apiUser, 'branchName', 'Main Branch'),
+        code: _string(apiUser, 'branchCode', 'MAIN'),
+        type: user.branchType,
       );
       await _processPendingSyncJobs();
       await loadSqlData();
@@ -395,6 +412,13 @@ class AppStore extends ChangeNotifier {
     customers
       ..clear()
       ..addAll(apiCustomers.map(_apiCustomerFromJson));
+
+    try {
+      final reference = await api.getMap('/reference');
+      final branches = _list(reference['branches']);
+      final userBranch = branches.where((branch) => _int(branch, 'BranchId') == activeBranch.id);
+      if (userBranch.isNotEmpty) activeBranch = BranchProfile.fromApi(userBranch.first);
+    } catch (_) {}
 
     try {
       final apiSuppliers = await api.getList('/suppliers');
@@ -447,6 +471,26 @@ class AppStore extends ChangeNotifier {
       _setSyncStatus(receiptPrinterName.isEmpty ? 'Receipt printer set to Windows default' : 'Receipt printer saved to SQL Server');
     } catch (error) {
       _setSyncStatus('Printer setting saved locally; SQL save failed: ${_shortError(error)}');
+    }
+  }
+
+  Future<void> saveActiveBranchType(String branchType) async {
+    final normalizedType = branchType.toLowerCase().contains('restaurant') ? 'Restaurant' : 'Retail';
+    activeBranch = activeBranch.copyWith(type: normalizedType);
+    _saveToDisk();
+    notifyListeners();
+    if (!sqlConnected) {
+      _setSyncStatus('Branch type saved locally');
+      return;
+    }
+    try {
+      await api.put('/reference/branches/${activeBranch.id}/type', {
+        'branchTypeCode': normalizedType == 'Restaurant' ? 'RESTAURANT' : 'RETAIL',
+      });
+      await loadSqlData();
+      _setSyncStatus('Branch type saved to SQL Server');
+    } catch (error) {
+      _setSyncStatus('Branch type saved locally; SQL save failed: ${_shortError(error)}');
     }
   }
 
@@ -737,6 +781,7 @@ class AppStore extends ChangeNotifier {
         'stockQuantity': product.stock,
         'taxRate': 0,
         'minStockLevel': product.minStock,
+        'posPriority': product.posPriority,
         'hasExpiry': false,
         'trackSerial': false,
         'isActive': true,
@@ -959,6 +1004,7 @@ Product _productFromJson(Map<String, dynamic> json) {
     stock: _double(json, 'stock'),
     minStock: _double(json, 'minStock'),
     category: _string(json, 'category', 'General'),
+    posPriority: _int(json, 'posPriority'),
   );
 }
 
@@ -972,6 +1018,7 @@ Map<String, dynamic> _productToJson(Product product) => {
       'stock': product.stock,
       'minStock': product.minStock,
       'category': product.category,
+      'posPriority': product.posPriority,
     };
 
 Party _partyFromJson(Map<String, dynamic> json) {
@@ -981,10 +1028,10 @@ Party _partyFromJson(Map<String, dynamic> json) {
 Map<String, dynamic> _partyToJson(Party party) => {'id': party.id, 'name': party.name, 'phone': party.phone, 'email': party.email, 'balance': party.balance};
 
 AppUser _userFromJson(Map<String, dynamic> json) {
-  return AppUser(id: _int(json, 'id'), name: _string(json, 'name'), email: _string(json, 'email'), role: _string(json, 'role', 'Cashier'), active: _bool(json, 'active', true), password: _string(json, 'password'));
+  return AppUser(id: _int(json, 'id'), name: _string(json, 'name'), email: _string(json, 'email'), role: _string(json, 'role', 'Cashier'), active: _bool(json, 'active', true), password: _string(json, 'password'), branchId: _int(json, 'branchId', 1), branchType: _string(json, 'branchType', 'Retail'));
 }
 
-Map<String, dynamic> _userToJson(AppUser user) => {'id': user.id, 'name': user.name, 'email': user.email, 'role': user.role, 'active': user.active, 'password': user.password};
+Map<String, dynamic> _userToJson(AppUser user) => {'id': user.id, 'name': user.name, 'email': user.email, 'role': user.role, 'active': user.active, 'password': user.password, 'branchId': user.branchId, 'branchType': user.branchType};
 
 PurchaseOrder _purchaseFromJson(Map<String, dynamic> json) {
   return PurchaseOrder(id: _int(json, 'id'), supplier: _string(json, 'supplier'), orderNo: _string(json, 'orderNo'), status: _string(json, 'status', 'Pending'), total: _double(json, 'total'));
@@ -1036,6 +1083,7 @@ InvoiceLine _invoiceLineFromJson(Map<String, dynamic> json) {
       stock: _double(json, 'stock'),
       minStock: _double(json, 'minStock'),
       category: _string(json, 'category'),
+      posPriority: _int(json, 'posPriority'),
     ),
     quantity: _double(json, 'quantity'),
   );
@@ -1051,6 +1099,7 @@ Map<String, dynamic> _invoiceLineToJson(InvoiceLine line) => {
       'stock': line.product.stock,
       'minStock': line.product.minStock,
       'category': line.product.category,
+      'posPriority': line.product.posPriority,
       'quantity': line.quantity,
     };
 
@@ -1082,6 +1131,7 @@ Product _apiProductFromJson(Map<String, dynamic> json) {
     stock: _double(json, 'StockOnHand'),
     minStock: _double(json, 'MinStockLevel'),
     category: _string(json, 'CategoryName', 'General'),
+    posPriority: _int(json, 'PosPriority'),
   );
 }
 
@@ -1094,7 +1144,7 @@ Party _apiSupplierFromJson(Map<String, dynamic> json) {
 }
 
 AppUser _apiUserFromJson(Map<String, dynamic> json) {
-  return AppUser(id: _int(json, 'UserId'), name: _string(json, 'FullName'), email: _string(json, 'Email'), role: _string(json, 'RoleName', 'Cashier'), active: _bool(json, 'IsActive', true));
+  return AppUser(id: _int(json, 'UserId'), name: _string(json, 'FullName'), email: _string(json, 'Email'), role: _string(json, 'RoleName', 'Cashier'), active: _bool(json, 'IsActive', true), branchId: _int(json, 'BranchId', 1), branchType: _string(json, 'BranchTypeName', 'Retail'));
 }
 
 Invoice _apiInvoiceFromJson(Map<String, dynamic> json) {
@@ -1123,6 +1173,7 @@ InvoiceLine _apiInvoiceLineFromJson(Map<String, dynamic> json) {
       stock: 0,
       minStock: 0,
       category: '',
+      posPriority: 0,
     ),
     quantity: _double(json, 'Quantity'),
   );
@@ -1151,6 +1202,7 @@ class Product {
     required this.stock,
     required this.minStock,
     required this.category,
+    this.posPriority = 0,
   });
 
   final int id;
@@ -1162,8 +1214,9 @@ class Product {
   final double stock;
   final double minStock;
   final String category;
+  final int posPriority;
 
-  Product copyWith({int? id, String? name, String? sku, String? barcode, double? salePrice, double? purchasePrice, double? stock, double? minStock, String? category}) {
+  Product copyWith({int? id, String? name, String? sku, String? barcode, double? salePrice, double? purchasePrice, double? stock, double? minStock, String? category, int? posPriority}) {
     return Product(
       id: id ?? this.id,
       name: name ?? this.name,
@@ -1174,6 +1227,7 @@ class Product {
       stock: stock ?? this.stock,
       minStock: minStock ?? this.minStock,
       category: category ?? this.category,
+      posPriority: posPriority ?? this.posPriority,
     );
   }
 }
@@ -1229,7 +1283,7 @@ class Party {
 }
 
 class AppUser {
-  const AppUser({required this.id, required this.name, required this.email, required this.role, required this.active, this.password = ''});
+  const AppUser({required this.id, required this.name, required this.email, required this.role, required this.active, this.password = '', this.branchId, this.branchType = 'Retail'});
 
   final int id;
   final String name;
@@ -1237,6 +1291,8 @@ class AppUser {
   final String role;
   final bool active;
   final String password;
+  final int? branchId;
+  final String branchType;
   String get defaultPassword => password.isNotEmpty
       ? password
       : switch (role) {
@@ -1254,9 +1310,49 @@ class AppUser {
   bool get canUsePos => isAdmin || isManager || isCashier;
   bool get canViewReports => isAdmin || isManager;
 
-  AppUser copyWith({int? id, String? name, String? email, String? role, bool? active, String? password}) {
-    return AppUser(id: id ?? this.id, name: name ?? this.name, email: email ?? this.email, role: role ?? this.role, active: active ?? this.active, password: password ?? this.password);
+  AppUser copyWith({int? id, String? name, String? email, String? role, bool? active, String? password, int? branchId, String? branchType}) {
+    return AppUser(id: id ?? this.id, name: name ?? this.name, email: email ?? this.email, role: role ?? this.role, active: active ?? this.active, password: password ?? this.password, branchId: branchId ?? this.branchId, branchType: branchType ?? this.branchType);
   }
+}
+
+class BranchProfile {
+  const BranchProfile({required this.id, required this.name, required this.code, required this.type});
+
+  final int id;
+  final String name;
+  final String code;
+  final String type;
+
+  bool get isRestaurant => type.toLowerCase().contains('restaurant');
+
+  BranchProfile copyWith({int? id, String? name, String? code, String? type}) {
+    return BranchProfile(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      code: code ?? this.code,
+      type: type ?? this.type,
+    );
+  }
+
+  factory BranchProfile.fromJson(Map<String, dynamic> json) {
+    return BranchProfile(
+      id: _int(json, 'id', 1),
+      name: _string(json, 'name', 'Main Branch'),
+      code: _string(json, 'code', 'MAIN'),
+      type: _string(json, 'type', 'Retail'),
+    );
+  }
+
+  factory BranchProfile.fromApi(Map<String, dynamic> json) {
+    return BranchProfile(
+      id: _int(json, 'BranchId', 1),
+      name: _string(json, 'Name', 'Main Branch'),
+      code: _string(json, 'Code', 'MAIN'),
+      type: _string(json, 'BranchTypeName', _string(json, 'TypeName', 'Retail')),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'code': code, 'type': type};
 }
 
 class PurchaseOrder {
@@ -1651,6 +1747,7 @@ class _ShellPageState extends State<ShellPage> {
     ModuleDef(title: 'Finance', icon: Icons.account_balance_wallet_outlined, builder: (_) => const FinanceView(), allowed: (user) => user.canManageFinance),
     ModuleDef(title: 'Reports', icon: Icons.analytics_outlined, builder: (_) => const ReportsView(), allowed: (user) => user.canViewReports),
     ModuleDef(title: 'Users', icon: Icons.admin_panel_settings_outlined, builder: (_) => const UsersView(), allowed: (user) => user.canManageUsers),
+    ModuleDef(title: 'Settings', icon: Icons.settings_outlined, builder: (_) => const SettingsView(), allowed: (user) => user.isAdmin),
   ];
 
   @override
@@ -1881,6 +1978,11 @@ class _PosViewState extends State<PosView> {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= 980;
+            final tablet = constraints.maxWidth >= 700;
+            final runsAndroid = !kIsWeb && Platform.isAndroid;
+            final runsWindows = !kIsWeb && Platform.isWindows;
+            final restaurantMenuMode = (kIsWeb || runsAndroid || runsWindows) && tablet && store.activeBranch.isRestaurant;
+            final quickProducts = _posProducts(store, windowsDesktopOnly: runsWindows && wide, menuMode: restaurantMenuMode);
             return Wrap(
               spacing: 16,
               runSpacing: 16,
@@ -1897,49 +1999,52 @@ class _PosViewState extends State<PosView> {
                     ),
                     child: Column(
                       children: [
-                        TextField(
-                          controller: search,
-                          focusNode: searchFocus,
-                          decoration: InputDecoration(
-                            prefixIcon: const Icon(Icons.qr_code_scanner_outlined),
-                            suffixIcon: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(tooltip: 'Pick item (F2)', onPressed: () => unawaited(_openItemPicker(store)), icon: const Icon(Icons.list_alt_outlined)),
-                                IconButton(tooltip: 'Add item (F3)', onPressed: () => _addBySearch(store), icon: const Icon(Icons.add_shopping_cart_outlined)),
-                              ],
-                            ),
-                            labelText: 'Scan barcode, SKU, or product name',
-                            border: const OutlineInputBorder(),
-                          ),
-                          onSubmitted: (_) => _addBySearch(store),
-                        ),
-                        const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            for (final product in store.products)
-                              ActionChip(
-                                avatar: const Icon(Icons.add, size: 18),
-                                label: Text(product.name),
-                                onPressed: product.stock <= 0 ? null : () => _addProduct(product),
+                        if (!restaurantMenuMode) ...[
+                          TextField(
+                            controller: search,
+                            focusNode: searchFocus,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.qr_code_scanner_outlined),
+                              suffixIcon: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(tooltip: 'Pick item (F2)', onPressed: () => unawaited(_openItemPicker(store)), icon: const Icon(Icons.list_alt_outlined)),
+                                  IconButton(tooltip: 'Add item (F3)', onPressed: () => _addBySearch(store), icon: const Icon(Icons.add_shopping_cart_outlined)),
+                                ],
                               ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        DataTable(
-                          columns: const [
-                            DataColumn(label: Text('Item')),
-                            DataColumn(label: Text('Qty'), numeric: true),
-                            DataColumn(label: Text('Total'), numeric: true),
-                            DataColumn(label: Text('')),
-                          ],
-                          rows: [
-                            for (var index = 0; index < cart.length; index++)
-                              _cartRow(index, cart[index], money),
-                          ],
-                        ),
+                              labelText: 'Scan barcode, SKU, or product name',
+                              border: const OutlineInputBorder(),
+                            ),
+                            onSubmitted: (_) => _addBySearch(store),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        if (restaurantMenuMode)
+                          _RestaurantMenuGrid(products: quickProducts, money: money, onAdd: _addProduct)
+                        else
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final product in quickProducts)
+                                ActionChip(
+                                  avatar: const Icon(Icons.add, size: 18),
+                                  label: Text(product.name),
+                                  onPressed: product.stock <= 0 ? null : () => _addProduct(product),
+                                ),
+                            ],
+                          ),
+                        if (!restaurantMenuMode) ...[
+                          const SizedBox(height: 16),
+                          _CartTable(
+                            cart: cart,
+                            money: money,
+                            selectedLineIndex: selectedLineIndex,
+                            onSelectLine: (index) => setState(() => selectedLineIndex = index),
+                            onChangeQuantity: _changeLineQuantity,
+                            onRemoveLine: _removeLine,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -1952,13 +2057,29 @@ class _PosViewState extends State<PosView> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        DropdownButtonFormField<String>(
-                          initialValue: customer,
-                          decoration: const InputDecoration(labelText: 'Customer', border: OutlineInputBorder()),
-                          items: [for (final party in store.customers) DropdownMenuItem(value: party.name, child: Text(party.name))],
-                          onChanged: (value) => setState(() => customer = value ?? customer),
-                        ),
-                        const SizedBox(height: 12),
+                        if (restaurantMenuMode) ...[
+                          Text('Added items', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 6),
+                          _CartTable(
+                            cart: cart,
+                            money: money,
+                            selectedLineIndex: selectedLineIndex,
+                            onSelectLine: (index) => setState(() => selectedLineIndex = index),
+                            onChangeQuantity: _changeLineQuantity,
+                            onRemoveLine: _removeLine,
+                          ),
+                          const SizedBox(height: 12),
+                          const Divider(height: 1),
+                          const SizedBox(height: 12),
+                        ] else ...[
+                          DropdownButtonFormField<String>(
+                            initialValue: customer,
+                            decoration: const InputDecoration(labelText: 'Customer', border: OutlineInputBorder()),
+                            items: [for (final party in store.customers) DropdownMenuItem(value: party.name, child: Text(party.name))],
+                            onChanged: (value) => setState(() => customer = value ?? customer),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
                         TotalRow(label: 'Subtotal', value: money.format(subtotal)),
                         TotalRow(
                           label: 'Discount (F4)',
@@ -2021,34 +2142,36 @@ class _PosViewState extends State<PosView> {
                           icon: const Icon(Icons.settings_outlined),
                           label: Text(store.receiptPrinterName.isEmpty ? 'Printer: Windows default' : 'Printer: ${store.receiptPrinterName}'),
                         ),
-                        const SizedBox(height: 12),
-                        const Divider(height: 1),
-                        const SizedBox(height: 12),
-                        Text('Recent invoices', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 6),
-                        for (final invoice in store.invoices.take(5))
-                          ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.receipt_long_outlined),
-                            title: Text(invoice.number),
-                            subtitle: Text('${invoice.customer}  |  ${money.format(invoice.total)}'),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Open PDF',
-                                  onPressed: () => unawaited(_openInvoicePdf(store, invoice)),
-                                  icon: const Icon(Icons.picture_as_pdf_outlined),
-                                ),
-                                IconButton(
-                                  tooltip: 'Duplicate reprint',
-                                  onPressed: () => unawaited(_reprintInvoice(store, invoice)),
-                                  icon: const Icon(Icons.print_outlined),
-                                ),
-                              ],
+                        if (!restaurantMenuMode) ...[
+                          const SizedBox(height: 12),
+                          const Divider(height: 1),
+                          const SizedBox(height: 12),
+                          Text('Recent invoices', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 6),
+                          for (final invoice in store.invoices.take(5))
+                            ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.receipt_long_outlined),
+                              title: Text(invoice.number),
+                              subtitle: Text('${invoice.customer}  |  ${money.format(invoice.total)}'),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Open PDF',
+                                    onPressed: () => unawaited(_openInvoicePdf(store, invoice)),
+                                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Duplicate reprint',
+                                    onPressed: () => unawaited(_reprintInvoice(store, invoice)),
+                                    icon: const Icon(Icons.print_outlined),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -2061,27 +2184,20 @@ class _PosViewState extends State<PosView> {
     );
   }
 
-  DataRow _cartRow(int index, InvoiceLine line, intl.NumberFormat money) {
-    return DataRow(
-      selected: selectedLineIndex == index,
-      onSelectChanged: (_) => setState(() => selectedLineIndex = index),
-      cells: [
-        DataCell(Text(line.product.name)),
-        DataCell(
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(tooltip: 'Qty - (F6)', onPressed: () => _changeLineQuantity(index, -1), icon: const Icon(Icons.remove_circle_outline)),
-              SizedBox(width: 36, child: Text(line.quantity.toStringAsFixed(0), textAlign: TextAlign.center)),
-              IconButton(tooltip: 'Qty + (F7)', onPressed: () => _changeLineQuantity(index, 1), icon: const Icon(Icons.add_circle_outline)),
-            ],
-          ),
-        ),
-        DataCell(Text(money.format(line.total))),
-        DataCell(IconButton(tooltip: 'Remove item (Delete)', onPressed: () => _removeLine(index), icon: const Icon(Icons.close))),
-      ],
-    );
+  List<Product> _posProducts(AppStore store, {required bool windowsDesktopOnly, required bool menuMode}) {
+    if (!windowsDesktopOnly && !menuMode) return store.products;
+    final products = store.products.where((product) => product.stock > 0).toList()
+      ..sort((a, b) {
+        final priorityCompare = _priorityRank(a).compareTo(_priorityRank(b));
+        if (priorityCompare != 0) return priorityCompare;
+        return a.name.compareTo(b.name);
+      });
+    if (windowsDesktopOnly) return products.take(10).toList();
+    if (menuMode) return products.where((product) => product.posPriority > 0).toList();
+    return products;
   }
+
+  int _priorityRank(Product product) => product.posPriority <= 0 ? 999999 : product.posPriority;
 
   void _focusSearch() {
     searchFocus.requestFocus();
@@ -2362,6 +2478,113 @@ class _PosViewState extends State<PosView> {
   }
 }
 
+class _CartTable extends StatelessWidget {
+  const _CartTable({
+    required this.cart,
+    required this.money,
+    required this.selectedLineIndex,
+    required this.onSelectLine,
+    required this.onChangeQuantity,
+    required this.onRemoveLine,
+  });
+
+  final List<InvoiceLine> cart;
+  final intl.NumberFormat money;
+  final int selectedLineIndex;
+  final ValueChanged<int> onSelectLine;
+  final void Function(int index, double delta) onChangeQuantity;
+  final ValueChanged<int> onRemoveLine;
+
+  @override
+  Widget build(BuildContext context) {
+    if (cart.isEmpty) {
+      return const SizedBox(height: 72, child: Center(child: Text('No items added')));
+    }
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('Item')),
+          DataColumn(label: Text('Qty'), numeric: true),
+          DataColumn(label: Text('Total'), numeric: true),
+          DataColumn(label: Text('')),
+        ],
+        rows: [
+          for (var index = 0; index < cart.length; index++) _cartRow(context, index, cart[index]),
+        ],
+      ),
+    );
+  }
+
+  DataRow _cartRow(BuildContext context, int index, InvoiceLine line) {
+    return DataRow(
+      selected: selectedLineIndex == index,
+      onSelectChanged: (_) => onSelectLine(index),
+      cells: [
+        DataCell(SizedBox(width: 180, child: Text(line.product.name, maxLines: 2, overflow: TextOverflow.ellipsis))),
+        DataCell(
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton(tooltip: 'Qty - (F6)', onPressed: () => onChangeQuantity(index, -1), icon: const Icon(Icons.remove_circle_outline)),
+              SizedBox(width: 34, child: Text(line.quantity.toStringAsFixed(0), textAlign: TextAlign.center)),
+              IconButton(tooltip: 'Qty + (F7)', onPressed: () => onChangeQuantity(index, 1), icon: const Icon(Icons.add_circle_outline)),
+            ],
+          ),
+        ),
+        DataCell(Text(money.format(line.total))),
+        DataCell(IconButton(tooltip: 'Remove item (Delete)', onPressed: () => onRemoveLine(index), icon: const Icon(Icons.close))),
+      ],
+    );
+  }
+}
+
+class _RestaurantMenuGrid extends StatelessWidget {
+  const _RestaurantMenuGrid({required this.products, required this.money, required this.onAdd});
+
+  final List<Product> products;
+  final intl.NumberFormat money;
+  final ValueChanged<Product> onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    if (products.isEmpty) {
+      return const SizedBox(height: 96, child: Center(child: Text('No menu items configured for this branch type')));
+    }
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 170,
+        mainAxisExtent: 96,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+      ),
+      itemCount: products.length,
+      itemBuilder: (context, index) {
+        final product = products[index];
+        return FilledButton.tonal(
+          onPressed: product.stock <= 0 ? null : () => onAdd(product),
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.all(10),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            alignment: Alignment.centerLeft,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(product.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              Text(money.format(product.salePrice), maxLines: 1, overflow: TextOverflow.ellipsis),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 class ProductsView extends StatelessWidget {
   const ProductsView({super.key});
 
@@ -2377,6 +2600,7 @@ class ProductsView extends StatelessWidget {
         columns: const [
           DataColumn(label: Text('Product')),
           DataColumn(label: Text('SKU')),
+          DataColumn(label: Text('POS priority'), numeric: true),
           DataColumn(label: Text('Stock'), numeric: true),
           DataColumn(label: Text('Price'), numeric: true),
           DataColumn(label: Text('Actions')),
@@ -2386,6 +2610,7 @@ class ProductsView extends StatelessWidget {
             DataRow(cells: [
               DataCell(Text(product.name)),
               DataCell(Text(product.sku)),
+              DataCell(Text(product.posPriority <= 0 ? '-' : product.posPriority.toString())),
               DataCell(Text(product.stock.toStringAsFixed(0))),
               DataCell(Text(money.format(product.salePrice))),
               DataCell(Row(
@@ -2680,6 +2905,58 @@ class UsersView extends StatelessWidget {
   }
 }
 
+class SettingsView extends StatelessWidget {
+  const SettingsView({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final store = StoreScope.of(context);
+    final branch = store.activeBranch;
+    final selectedType = branch.isRestaurant ? 'Restaurant' : 'Retail';
+    return ResponsiveColumns(
+      left: AppPanel(
+        title: 'Branch settings',
+        horizontalScroll: false,
+        child: SizedBox(
+          width: 560,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.store_outlined),
+                title: Text(branch.name),
+                subtitle: Text('${branch.code}  |  ${branch.type}'),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'Retail', icon: Icon(Icons.point_of_sale_outlined), label: Text('Retail')),
+                  ButtonSegment(value: 'Restaurant', icon: Icon(Icons.restaurant_menu_outlined), label: Text('Restaurant')),
+                ],
+                selected: {selectedType},
+                onSelectionChanged: (value) async {
+                  await store.saveActiveBranchType(value.first);
+                  if (!context.mounted) return;
+                  _showMessage(context, store.syncStatus);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+      right: DataPanel(
+        title: 'POS behavior',
+        rows: const [
+          ['Retail', 'Normal scan/search POS', 'All items'],
+          ['Restaurant', 'Tablet menu POS', 'Priority items'],
+          ['Windows desktop', 'Quick chips', 'Top 10 priority'],
+        ],
+      ),
+    );
+  }
+}
+
 class ResponsiveColumns extends StatelessWidget {
   const ResponsiveColumns({super.key, required this.left, required this.right});
 
@@ -2961,6 +3238,7 @@ String _safeFileName(String value, {required String fallback}) {
 }
 
 Future<void> _openFile(File file) async {
+  if (kIsWeb) return;
   final path = file.absolute.path;
   if (Platform.isWindows) {
     await Process.run('cmd', ['/c', 'start', '', path]);
@@ -3006,7 +3284,7 @@ Future<void> _printInvoiceDirect(BuildContext context, Invoice invoice, List<Inv
   final receiptFile = File('${directory.path}/$safeName-receipt.txt');
   receiptFile.writeAsStringSync(_invoiceReceiptText(invoice, lines, duplicate: duplicate), encoding: utf8);
 
-  if (!Platform.isWindows) {
+  if (kIsWeb || !Platform.isWindows) {
     await _openFile(receiptFile);
     if (!context.mounted) return;
     _showMessage(context, 'Receipt opened: ${receiptFile.path}');
@@ -3326,6 +3604,7 @@ Future<void> _openProductDialog(BuildContext context, {Product? product}) async 
   final purchasePrice = TextEditingController(text: (product?.purchasePrice ?? 0).toStringAsFixed(0));
   final stock = TextEditingController(text: (product?.stock ?? 0).toStringAsFixed(0));
   final minStock = TextEditingController(text: (product?.minStock ?? 0).toStringAsFixed(0));
+  final posPriority = TextEditingController(text: product == null || product.posPriority <= 0 ? '' : product.posPriority.toString());
   await _showFormDialog(
     context,
     title: product == null ? 'New product' : 'Edit product',
@@ -3364,6 +3643,7 @@ Future<void> _openProductDialog(BuildContext context, {Product? product}) async 
       TextField(controller: purchasePrice, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Purchase price')),
       TextField(controller: stock, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Stock')),
       TextField(controller: minStock, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Min stock')),
+      TextField(controller: posPriority, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'POS priority', helperText: '1 is shown first; leave blank to hide from restaurant tablet menu')),
     ],
     onSave: () {
       store.upsertProduct(Product(
@@ -3376,6 +3656,7 @@ Future<void> _openProductDialog(BuildContext context, {Product? product}) async 
         purchasePrice: _num(purchasePrice),
         stock: _num(stock),
         minStock: _num(minStock),
+        posPriority: int.tryParse(posPriority.text.trim()) ?? 0,
       ));
     },
   );

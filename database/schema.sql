@@ -74,6 +74,22 @@ CREATE TABLE dbo.AppSettings (
     CONSTRAINT UQ_AppSettings_Key UNIQUE (TenantId, SettingKey)
 );
 
+CREATE TABLE dbo.BranchTypes (
+    BranchTypeId INT IDENTITY(1,1) PRIMARY KEY,
+    TenantId INT NOT NULL,
+    Name NVARCHAR(80) NOT NULL,
+    Code NVARCHAR(32) NOT NULL,
+    IsActive BIT NOT NULL DEFAULT 1,
+    CONSTRAINT FK_BranchTypes_Tenants FOREIGN KEY (TenantId) REFERENCES dbo.Tenants(TenantId),
+    CONSTRAINT UQ_BranchTypes_Code UNIQUE (TenantId, Code)
+);
+
+ALTER TABLE dbo.Branches
+ADD BranchTypeId INT NULL;
+
+ALTER TABLE dbo.Branches
+ADD CONSTRAINT FK_Branches_BranchTypes FOREIGN KEY (BranchTypeId) REFERENCES dbo.BranchTypes(BranchTypeId);
+
 CREATE TABLE dbo.Categories (
     CategoryId INT IDENTITY(1,1) PRIMARY KEY,
     TenantId INT NOT NULL,
@@ -114,6 +130,7 @@ CREATE TABLE dbo.Products (
     PurchasePrice DECIMAL(18,2) NOT NULL DEFAULT 0,
     TaxRate DECIMAL(9,4) NOT NULL DEFAULT 0,
     MinStockLevel DECIMAL(18,3) NOT NULL DEFAULT 0,
+    PosPriority INT NOT NULL DEFAULT 0,
     HasExpiry BIT NOT NULL DEFAULT 0,
     TrackSerial BIT NOT NULL DEFAULT 0,
     IsActive BIT NOT NULL DEFAULT 1,

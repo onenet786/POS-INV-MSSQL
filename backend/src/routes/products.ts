@@ -18,6 +18,7 @@ const productSchema = z.object({
   purchasePrice: z.number().nonnegative(),
   taxRate: z.number().nonnegative().default(0),
   minStockLevel: z.number().nonnegative().default(0),
+  posPriority: z.number().int().nonnegative().default(0),
   stockQuantity: z.number().nonnegative().optional(),
   hasExpiry: z.boolean().default(false),
   trackSerial: z.boolean().default(false),
@@ -75,7 +76,7 @@ productsRouter.get('/', requireAuth, requirePermission('products.read'), async (
         LEFT JOIN (${stockFormula}) stock ON stock.ProductId = p.ProductId
         WHERE p.TenantId = @TenantId
           AND (@Search = '%%' OR p.Name LIKE @Search OR p.SKU LIKE @Search OR p.Barcode LIKE @Search)
-        ORDER BY p.Name
+        ORDER BY CASE WHEN p.PosPriority > 0 THEN 0 ELSE 1 END, p.PosPriority, p.Name
       `);
     res.json(result.recordset);
   } catch (error) {
@@ -129,12 +130,13 @@ productsRouter.post('/', requireAuth, requirePermission('products.create'), asyn
       .input('PurchasePrice', sql.Decimal(18, 2), body.purchasePrice)
       .input('TaxRate', sql.Decimal(9, 4), body.taxRate)
       .input('MinStockLevel', sql.Decimal(18, 3), body.minStockLevel)
+      .input('PosPriority', sql.Int, body.posPriority)
       .input('HasExpiry', sql.Bit, body.hasExpiry)
       .input('TrackSerial', sql.Bit, body.trackSerial)
       .query(`
-        INSERT INTO dbo.Products (TenantId, CategoryId, BrandId, UnitId, Name, SKU, Barcode, QRPayload, SalePrice, PurchasePrice, TaxRate, MinStockLevel, HasExpiry, TrackSerial)
+        INSERT INTO dbo.Products (TenantId, CategoryId, BrandId, UnitId, Name, SKU, Barcode, QRPayload, SalePrice, PurchasePrice, TaxRate, MinStockLevel, PosPriority, HasExpiry, TrackSerial)
         OUTPUT INSERTED.*
-        VALUES (@TenantId, @CategoryId, @BrandId, @UnitId, @Name, @SKU, @Barcode, @QRPayload, @SalePrice, @PurchasePrice, @TaxRate, @MinStockLevel, @HasExpiry, @TrackSerial)
+        VALUES (@TenantId, @CategoryId, @BrandId, @UnitId, @Name, @SKU, @Barcode, @QRPayload, @SalePrice, @PurchasePrice, @TaxRate, @MinStockLevel, @PosPriority, @HasExpiry, @TrackSerial)
       `);
     const created = result.recordset[0];
     if ((body.stockQuantity ?? 0) > 0) {
@@ -193,6 +195,7 @@ productsRouter.put('/:id', requireAuth, requirePermission('products.update'), as
       .input('PurchasePrice', sql.Decimal(18, 2), body.purchasePrice ?? p.PurchasePrice)
       .input('TaxRate', sql.Decimal(9, 4), body.taxRate ?? p.TaxRate)
       .input('MinStockLevel', sql.Decimal(18, 3), body.minStockLevel ?? p.MinStockLevel)
+      .input('PosPriority', sql.Int, body.posPriority ?? p.PosPriority ?? 0)
       .input('HasExpiry', sql.Bit, body.hasExpiry ?? p.HasExpiry)
       .input('TrackSerial', sql.Bit, body.trackSerial ?? p.TrackSerial)
       .input('IsActive', sql.Bit, body.isActive ?? p.IsActive)
@@ -200,7 +203,7 @@ productsRouter.put('/:id', requireAuth, requirePermission('products.update'), as
         UPDATE dbo.Products
         SET CategoryId = @CategoryId, BrandId = @BrandId, UnitId = @UnitId, Name = @Name, SKU = @SKU, 
             Barcode = @Barcode, QRPayload = @QRPayload, SalePrice = @SalePrice, PurchasePrice = @PurchasePrice, 
-            TaxRate = @TaxRate, MinStockLevel = @MinStockLevel, HasExpiry = @HasExpiry, TrackSerial = @TrackSerial,
+            TaxRate = @TaxRate, MinStockLevel = @MinStockLevel, PosPriority = @PosPriority, HasExpiry = @HasExpiry, TrackSerial = @TrackSerial,
             IsActive = @IsActive
         OUTPUT INSERTED.*
         WHERE TenantId = @TenantId AND ProductId = @ProductId

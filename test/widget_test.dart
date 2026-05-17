@@ -10,7 +10,8 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     await tester.pumpWidget(const InvProApp());
-    expect(find.text('InvPro login'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 1300));
+    expect(find.text('Sign in to continue'), findsOneWidget);
 
     await tester.tap(find.text('Login'));
     await tester.pumpAndSettle();

@@ -6,8 +6,13 @@ VALUES ('InvPro Demo Company', 'PKR');
 
 DECLARE @TenantId INT = SCOPE_IDENTITY();
 
-INSERT INTO dbo.Branches (TenantId, Name, Code, Address)
-VALUES (@TenantId, 'Main Branch', 'MAIN', 'Head office and retail counter');
+INSERT INTO dbo.BranchTypes (TenantId, Name, Code)
+VALUES (@TenantId, 'Retail', 'RETAIL'), (@TenantId, 'Restaurant', 'RESTAURANT');
+
+DECLARE @RetailBranchTypeId INT = (SELECT TOP 1 BranchTypeId FROM dbo.BranchTypes WHERE TenantId = @TenantId AND Code = 'RETAIL');
+
+INSERT INTO dbo.Branches (TenantId, BranchTypeId, Name, Code, Address)
+VALUES (@TenantId, @RetailBranchTypeId, 'Main Branch', 'MAIN', 'Head office and retail counter');
 
 DECLARE @BranchId INT = SCOPE_IDENTITY();
 
@@ -40,10 +45,10 @@ DECLARE @UnitId INT = (SELECT TOP 1 UnitId FROM dbo.Units WHERE TenantId = @Tena
 DECLARE @CategoryId INT = (SELECT TOP 1 CategoryId FROM dbo.Categories WHERE TenantId = @TenantId AND Name = 'Electronics');
 DECLARE @BrandId INT = (SELECT TOP 1 BrandId FROM dbo.Brands WHERE TenantId = @TenantId AND Name = 'Samsung');
 
-INSERT INTO dbo.Products (TenantId, CategoryId, BrandId, UnitId, Name, SKU, Barcode, QRPayload, SalePrice, PurchasePrice, TaxRate, MinStockLevel)
+INSERT INTO dbo.Products (TenantId, CategoryId, BrandId, UnitId, Name, SKU, Barcode, QRPayload, SalePrice, PurchasePrice, TaxRate, MinStockLevel, PosPriority)
 VALUES
-(@TenantId, @CategoryId, @BrandId, @UnitId, 'Samsung USB-C Charger 25W', 'SKU-000001', '100000000001', '{"sku":"SKU-000001","name":"Samsung USB-C Charger 25W"}', 2800, 1900, 18, 10),
-(@TenantId, @CategoryId, @BrandId, @UnitId, 'Bluetooth Headset Pro', 'SKU-000002', '100000000002', '{"sku":"SKU-000002","name":"Bluetooth Headset Pro"}', 5500, 3600, 18, 5);
+(@TenantId, @CategoryId, @BrandId, @UnitId, 'Samsung USB-C Charger 25W', 'SKU-000001', '100000000001', '{"sku":"SKU-000001","name":"Samsung USB-C Charger 25W"}', 2800, 1900, 18, 10, 1),
+(@TenantId, @CategoryId, @BrandId, @UnitId, 'Bluetooth Headset Pro', 'SKU-000002', '100000000002', '{"sku":"SKU-000002","name":"Bluetooth Headset Pro"}', 5500, 3600, 18, 5, 2);
 
 EXEC dbo.sp_RecordStockMovement @TenantId, @BranchId, @WarehouseId, 1, NULL, 'Opening', 100, 'Seed', 1, NULL, 'Opening balance';
 EXEC dbo.sp_RecordStockMovement @TenantId, @BranchId, @WarehouseId, 2, NULL, 'Opening', 32, 'Seed', 1, NULL, 'Opening balance';

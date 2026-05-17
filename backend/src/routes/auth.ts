@@ -17,9 +17,12 @@ authRouter.post('/login', async (req, res, next) => {
     const result = await pool.request()
       .input('Email', sql.NVarChar(180), body.email)
       .query(`
-        SELECT TOP 1 u.UserId, u.TenantId, u.BranchId, u.FullName, u.Email, u.PasswordHash, r.Name RoleName, r.Permissions
+        SELECT TOP 1 u.UserId, u.TenantId, u.BranchId, u.FullName, u.Email, u.PasswordHash, r.Name RoleName, r.Permissions,
+          b.Name BranchName, b.Code BranchCode, bt.Name BranchTypeName
         FROM dbo.Users u
         INNER JOIN dbo.Roles r ON r.RoleId = u.RoleId
+        LEFT JOIN dbo.Branches b ON b.BranchId = u.BranchId
+        LEFT JOIN dbo.BranchTypes bt ON bt.BranchTypeId = b.BranchTypeId
         WHERE u.Email = @Email AND u.IsActive = 1
       `);
 
@@ -42,7 +45,7 @@ authRouter.post('/login', async (req, res, next) => {
 
     return res.json({
       token,
-      user: { id: user.UserId, name: user.FullName, email: user.Email, role: user.RoleName },
+      user: { id: user.UserId, name: user.FullName, email: user.Email, role: user.RoleName, branchId: user.BranchId, branchName: user.BranchName, branchCode: user.BranchCode, branchType: user.BranchTypeName ?? 'Retail' },
     });
   } catch (error) {
     next(error);
@@ -66,4 +69,3 @@ authRouter.post('/bootstrap-admin', async (req, res, next) => {
     next(error);
   }
 });
-

@@ -10,8 +10,14 @@ referenceRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const pool = await getPool();
     const request = pool.request().input('TenantId', sql.Int, req.user!.tenantId);
-    const [branches, warehouses, categories, brands, units] = await Promise.all([
-      request.query('SELECT BranchId, Name, Code FROM dbo.Branches WHERE TenantId = @TenantId AND IsActive = 1'),
+    const [branches, branchTypes, warehouses, categories, brands, units] = await Promise.all([
+      request.query(`
+        SELECT b.BranchId, b.Name, b.Code, b.BranchTypeId, bt.Name BranchTypeName
+        FROM dbo.Branches b
+        LEFT JOIN dbo.BranchTypes bt ON bt.BranchTypeId = b.BranchTypeId
+        WHERE b.TenantId = @TenantId AND b.IsActive = 1
+      `),
+      pool.request().input('TenantId', sql.Int, req.user!.tenantId).query('SELECT BranchTypeId, Name, Code FROM dbo.BranchTypes WHERE TenantId = @TenantId AND IsActive = 1 ORDER BY Name'),
       pool.request().input('TenantId', sql.Int, req.user!.tenantId).query('SELECT WarehouseId, BranchId, Name, Code FROM dbo.Warehouses WHERE TenantId = @TenantId AND IsActive = 1'),
       pool.request().input('TenantId', sql.Int, req.user!.tenantId).query('SELECT CategoryId, ParentCategoryId, Name FROM dbo.Categories WHERE TenantId = @TenantId'),
       pool.request().input('TenantId', sql.Int, req.user!.tenantId).query('SELECT BrandId, Name FROM dbo.Brands WHERE TenantId = @TenantId'),
@@ -19,6 +25,7 @@ referenceRouter.get('/', requireAuth, async (req, res, next) => {
     ]);
     res.json({
       branches: branches.recordset,
+      branchTypes: branchTypes.recordset,
       warehouses: warehouses.recordset,
       categories: categories.recordset,
       brands: brands.recordset,
@@ -99,16 +106,41 @@ referenceRouter.post('/units', requireAuth, requirePermission('settings.manage')
 // Branches CRUD
 referenceRouter.post('/branches', requireAuth, requirePermission('settings.manage'), async (req, res, next) => {
   try {
-    const body = z.object({ name: z.string().min(2), code: z.string().min(2), address: z.string().optional() }).parse(req.body);
+    const body = z.object({ name: z.string().min(2), code: z.string().min(2), branchTypeId: z.number().optional(), address: z.string().optional() }).parse(req.body);
     const pool = await getPool();
     const result = await pool.request()
       .input('TenantId', sql.Int, req.user!.tenantId)
       .input('Name', sql.NVarChar(160), body.name)
       .input('Code', sql.NVarChar(32), body.code)
+      .input('BranchTypeId', sql.Int, body.branchTypeId ?? null)
       .input('Address', sql.NVarChar(500), body.address ?? null)
-      .query('INSERT INTO dbo.Branches (TenantId, Name, Code, Address) OUTPUT INSERTED.* VALUES (@TenantId, @Name, @Code, @Address)');
+      .query('INSERT INTO dbo.Branches (TenantId, BranchTypeId, Name, Code, Address) OUTPUT INSERTED.* VALUES (@TenantId, @BranchTypeId, @Name, @Code, @Address)');
     await audit(req, 'branches.create', 'Branches', String(result.recordset[0].BranchId), body);
     res.status(201).json(result.recordset[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+referenceRouter.put('/branches/:id/type', requireAuth, requirePermission('settings.manage'), async (req, res, next) => {
+  try {
+    const body = z.object({ branchTypeCode: z.enum(['RETAIL', 'RESTAURANT']) }).parse(req.body);
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('TenantId', sql.Int, req.user!.tenantId)
+      .input('BranchId', sql.Int, Number(req.params.id))
+      .input('BranchTypeCode', sql.NVarChar(32), body.branchTypeCode)
+      .query(`
+        UPDATE b
+        SET BranchTypeId = bt.BranchTypeId
+        OUTPUT INSERTED.*
+        FROM dbo.Branches b
+        INNER JOIN dbo.BranchTypes bt ON bt.TenantId = b.TenantId AND bt.Code = @BranchTypeCode
+        WHERE b.TenantId = @TenantId AND b.BranchId = @BranchId
+      `);
+    if (!result.recordset[0]) return res.status(404).json({ message: 'Branch or branch type not found' });
+    await audit(req, 'branches.updateType', 'Branches', String(req.params.id), body);
+    res.json(result.recordset[0]);
   } catch (error) {
     next(error);
   }
@@ -131,4 +163,3 @@ referenceRouter.post('/warehouses', requireAuth, requirePermission('settings.man
     next(error);
   }
 });
-
