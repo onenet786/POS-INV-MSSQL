@@ -156,12 +156,11 @@ class ApiClient {
 
   Future<List<Map<String, dynamic>>> getList(String path) async {
     final response = await _request('GET', path);
-    if (response is List) {
+    if (response is List)
       return response
           .whereType<Map>()
           .map((item) => Map<String, dynamic>.from(item))
           .toList();
-    }
     return const [];
   }
 
@@ -209,9 +208,8 @@ class ApiClient {
     final request = await client.openUrl(method, Uri.parse('$baseUrl$path'));
     request.headers.contentType = ContentType.json;
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-    if (auth && token != null) {
+    if (auth && token != null)
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-    }
     if (body != null) request.write(jsonEncode(body));
     final response = await request.close();
     final text = await response.transform(utf8.decoder).join();
@@ -631,9 +629,8 @@ class AppStore extends ChangeNotifier {
       final userBranch = branches.where(
         (branch) => _int(branch, 'BranchId') == activeBranch.id,
       );
-      if (userBranch.isNotEmpty) {
+      if (userBranch.isNotEmpty)
         activeBranch = BranchProfile.fromApi(userBranch.first);
-      }
     } catch (_) {}
 
     try {
@@ -1352,23 +1349,20 @@ class AppStore extends ChangeNotifier {
 
   void _replaceProductId(int oldId, int newId) {
     final index = products.indexWhere((item) => item.id == oldId);
-    if (index != -1 && oldId != newId) {
+    if (index != -1 && oldId != newId)
       products[index] = products[index].copyWith(id: newId);
-    }
   }
 
   void _replacePartyId(List<Party> list, int oldId, int newId) {
     final index = list.indexWhere((item) => item.id == oldId);
-    if (index != -1 && oldId != newId) {
+    if (index != -1 && oldId != newId)
       list[index] = list[index].copyWith(id: newId);
-    }
   }
 
   void _replaceUserId(int oldId, int newId) {
     final index = users.indexWhere((item) => item.id == oldId);
-    if (index != -1 && oldId != newId) {
+    if (index != -1 && oldId != newId)
       users[index] = users[index].copyWith(id: newId);
-    }
   }
 
   void _replaceInvoice(int oldId, Invoice invoice) {
@@ -2666,13 +2660,6 @@ class _ShellPageState extends State<ShellPage> {
                                 : Icons.dark_mode_outlined,
                           ),
                         ),
-                      if (modules[selected].title == 'POS')
-                        IconButton(
-                          tooltip: 'Receipt printer',
-                          onPressed: () =>
-                              unawaited(_openReceiptPrinterDialog(context, store)),
-                          icon: const Icon(Icons.print_outlined),
-                        ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Tooltip(
@@ -2957,9 +2944,8 @@ class _PosViewState extends State<PosView> {
           if (cart.isNotEmpty) _postInvoice(store, total, tendered);
         },
         const SingleActivator(LogicalKeyboardKey.f9): () {
-          if (cart.isNotEmpty) {
+          if (cart.isNotEmpty)
             _postInvoice(store, total, tendered, printAfterPost: true);
-          }
         },
         const SingleActivator(LogicalKeyboardKey.delete): _removeSelectedLine,
         const SingleActivator(LogicalKeyboardKey.escape): () {
@@ -2975,33 +2961,26 @@ class _PosViewState extends State<PosView> {
             final tablet = constraints.maxWidth >= 700;
             final runsAndroid = !kIsWeb && Platform.isAndroid;
             final runsWindows = !kIsWeb && Platform.isWindows;
-            final landscape = constraints.maxWidth > constraints.maxHeight;
-            final restaurantTerminalSize =
-                tablet || (runsAndroid && landscape && constraints.maxWidth >= 560);
             final restaurantMenuMode =
                 (kIsWeb || runsAndroid || runsWindows) &&
-                restaurantTerminalSize &&
+                tablet &&
                 store.activeBranch.isRestaurant;
             final quickProducts = _posProducts(
               store,
               windowsDesktopOnly: runsWindows && wide,
               menuMode: restaurantMenuMode,
             );
-            final twoPane = wide || restaurantMenuMode;
-            final panelHeight = (MediaQuery.sizeOf(context).height -
-                    MediaQuery.paddingOf(context).vertical -
-                    kToolbarHeight -
-                    32)
-                .clamp(680.0, 900.0);
-            final panels = <Widget>[
+            return Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: [
                 SizedBox(
-                  width: twoPane
+                  width: wide
                       ? (constraints.maxWidth - 16) * .62
                       : constraints.maxWidth,
                   child: AppPanel(
                     title: 'Sell items',
                     horizontalScroll: false,
-                    fillBody: restaurantMenuMode,
                     action: IconButton(
                       tooltip: 'Clear bill',
                       onPressed: cart.isEmpty ? null : _clearCart,
@@ -3043,12 +3022,10 @@ class _PosViewState extends State<PosView> {
                           const SizedBox(height: 12),
                         ],
                         if (restaurantMenuMode)
-                          Expanded(
-                            child: _RestaurantMenuGrid(
-                              products: quickProducts,
-                              money: money,
-                              onAdd: _addProduct,
-                            ),
+                          _RestaurantMenuGrid(
+                            products: quickProducts,
+                            money: money,
+                            onAdd: _addProduct,
                           )
                         else
                           Wrap(
@@ -3082,13 +3059,12 @@ class _PosViewState extends State<PosView> {
                   ),
                 ),
                 SizedBox(
-                  width: twoPane
+                  width: wide
                       ? (constraints.maxWidth - 16) * .38
                       : constraints.maxWidth,
                   child: AppPanel(
                     title: 'Payment',
                     horizontalScroll: false,
-                    fillBody: restaurantMenuMode,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -3099,17 +3075,14 @@ class _PosViewState extends State<PosView> {
                                 ?.copyWith(fontWeight: FontWeight.w700),
                           ),
                           const SizedBox(height: 6),
-                          Expanded(
-                            child: _CartTable(
-                              cart: cart,
-                              money: money,
-                              selectedLineIndex: selectedLineIndex,
-                              compact: true,
-                              onSelectLine: (index) =>
-                                  setState(() => selectedLineIndex = index),
-                              onChangeQuantity: _changeLineQuantity,
-                              onRemoveLine: _removeLine,
-                            ),
+                          _CartTable(
+                            cart: cart,
+                            money: money,
+                            selectedLineIndex: selectedLineIndex,
+                            onSelectLine: (index) =>
+                                setState(() => selectedLineIndex = index),
+                            onChangeQuantity: _changeLineQuantity,
+                            onRemoveLine: _removeLine,
                           ),
                           const SizedBox(height: 12),
                           const Divider(height: 1),
@@ -3133,159 +3106,118 @@ class _PosViewState extends State<PosView> {
                           ),
                           const SizedBox(height: 12),
                         ],
-                        if (restaurantMenuMode)
-                          _RestaurantPaymentControls(
-                            money: money,
-                            subtotal: subtotal,
-                            discount: discount,
-                            total: total,
-                            tendered: tendered,
-                            balanceOrChange: paymentMethod == 'Credit'
-                                ? balanceDue
-                                : changeDue,
-                            paymentMethod: paymentMethod,
-                            amountPaid: amountPaid,
-                            cartIsEmpty: cart.isEmpty,
-                            onDiscount: cart.isEmpty
-                                ? null
-                                : () => unawaited(_openDiscountDialog(subtotal)),
-                            onPaymentMethodChanged: (value) {
-                              setState(() {
-                                paymentMethod = value;
-                                if (paymentMethod == 'Credit') {
-                                  amountPaid.clear();
-                                }
-                              });
-                            },
-                            onAmountChanged: () => setState(() {}),
-                            onPost: () => _postInvoice(store, total, tendered),
-                            onPrint: () => _postInvoice(
-                              store,
-                              total,
-                              tendered,
-                              printAfterPost: true,
-                            ),
-                          )
-                        else ...[
-                          TotalRow(
-                            label: 'Subtotal',
-                            value: money.format(subtotal),
-                          ),
-                          TotalRow(
-                            label: 'Discount (F4)',
-                            value: money.format(discount),
-                            action: IconButton(
-                              tooltip: 'Set discount (F4)',
-                              onPressed: cart.isEmpty
-                                  ? null
-                                  : () => unawaited(
-                                      _openDiscountDialog(subtotal),
-                                    ),
-                              icon: const Icon(Icons.percent_outlined),
-                            ),
-                          ),
-                          const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
-                          const Divider(height: 28),
-                          TotalRow(
-                            label: 'Grand total',
-                            value: money.format(total),
-                            strong: true,
-                          ),
-                          const SizedBox(height: 16),
-                          SegmentedButton<String>(
-                            segments: const [
-                              ButtonSegment(
-                                value: 'Cash',
-                                icon: Icon(Icons.payments_outlined),
-                                label: Text('Cash'),
-                              ),
-                              ButtonSegment(
-                                value: 'Card',
-                                icon: Icon(Icons.credit_card),
-                                label: Text('Card'),
-                              ),
-                              ButtonSegment(
-                                value: 'Credit',
-                                icon: Icon(Icons.schedule_outlined),
-                                label: Text('Credit'),
-                              ),
-                            ],
-                            selected: {paymentMethod},
-                            onSelectionChanged: (value) {
-                              setState(() {
-                                paymentMethod = value.first;
-                                if (paymentMethod == 'Credit') {
-                                  amountPaid.clear();
-                                }
-                              });
-                            },
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: amountPaid,
-                            enabled: paymentMethod != 'Credit',
-                            keyboardType: TextInputType.number,
-                            decoration: InputDecoration(
-                              prefixIcon: const Icon(Icons.payments_outlined),
-                              labelText: paymentMethod == 'Cash'
-                                  ? 'Cash received from customer'
-                                  : 'Amount paid by customer',
-                              hintText: total > 0
-                                  ? total.toStringAsFixed(0)
-                                  : '0',
-                              border: const OutlineInputBorder(),
-                            ),
-                            onChanged: (_) => setState(() {}),
-                          ),
-                          const SizedBox(height: 8),
-                          TotalRow(
-                            label: 'Paid amount',
-                            value: money.format(tendered),
-                          ),
-                          TotalRow(
-                            label: paymentMethod == 'Credit'
-                                ? 'Balance due'
-                                : 'Return change',
-                            value: money.format(
-                              paymentMethod == 'Credit'
-                                  ? balanceDue
-                                  : changeDue,
-                            ),
-                            strong: changeDue > 0 || balanceDue > 0,
-                          ),
-                          const SizedBox(height: 16),
-                          FilledButton.icon(
+                        TotalRow(
+                          label: 'Subtotal',
+                          value: money.format(subtotal),
+                        ),
+                        TotalRow(
+                          label: 'Discount (F4)',
+                          value: money.format(discount),
+                          action: IconButton(
+                            tooltip: 'Set discount (F4)',
                             onPressed: cart.isEmpty
                                 ? null
-                                : () => _postInvoice(store, total, tendered),
-                            icon: const Icon(Icons.receipt_long_outlined),
-                            label: const Text('Post invoice (F8)'),
+                                : () =>
+                                      unawaited(_openDiscountDialog(subtotal)),
+                            icon: const Icon(Icons.percent_outlined),
                           ),
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: cart.isEmpty
-                                ? null
-                                : () => _postInvoice(
-                                    store,
-                                    total,
-                                    tendered,
-                                    printAfterPost: true,
-                                  ),
-                            icon: const Icon(Icons.print_outlined),
-                            label: const Text('Post & print (F9)'),
-                          ),
-                          const SizedBox(height: 8),
-                          TextButton.icon(
-                            onPressed: () =>
-                                _openReceiptPrinterDialog(context, store),
-                            icon: const Icon(Icons.settings_outlined),
-                            label: Text(
-                              store.receiptPrinterName.isEmpty
-                                  ? 'Printer: Windows default'
-                                  : 'Printer: ${store.receiptPrinterName}',
+                        ),
+                        const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
+                        const Divider(height: 28),
+                        TotalRow(
+                          label: 'Grand total',
+                          value: money.format(total),
+                          strong: true,
+                        ),
+                        const SizedBox(height: 16),
+                        SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(
+                              value: 'Cash',
+                              icon: Icon(Icons.payments_outlined),
+                              label: Text('Cash'),
                             ),
+                            ButtonSegment(
+                              value: 'Card',
+                              icon: Icon(Icons.credit_card),
+                              label: Text('Card'),
+                            ),
+                            ButtonSegment(
+                              value: 'Credit',
+                              icon: Icon(Icons.schedule_outlined),
+                              label: Text('Credit'),
+                            ),
+                          ],
+                          selected: {paymentMethod},
+                          onSelectionChanged: (value) {
+                            setState(() {
+                              paymentMethod = value.first;
+                              if (paymentMethod == 'Credit') amountPaid.clear();
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: amountPaid,
+                          enabled: paymentMethod != 'Credit',
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.payments_outlined),
+                            labelText: paymentMethod == 'Cash'
+                                ? 'Cash received from customer'
+                                : 'Amount paid by customer',
+                            hintText: total > 0
+                                ? total.toStringAsFixed(0)
+                                : '0',
+                            border: const OutlineInputBorder(),
                           ),
-                        ],
+                          onChanged: (_) => setState(() {}),
+                        ),
+                        const SizedBox(height: 8),
+                        TotalRow(
+                          label: 'Paid amount',
+                          value: money.format(tendered),
+                        ),
+                        TotalRow(
+                          label: paymentMethod == 'Credit'
+                              ? 'Balance due'
+                              : 'Return change',
+                          value: money.format(
+                            paymentMethod == 'Credit' ? balanceDue : changeDue,
+                          ),
+                          strong: changeDue > 0 || balanceDue > 0,
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: cart.isEmpty
+                              ? null
+                              : () => _postInvoice(store, total, tendered),
+                          icon: const Icon(Icons.receipt_long_outlined),
+                          label: const Text('Post invoice (F8)'),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: cart.isEmpty
+                              ? null
+                              : () => _postInvoice(
+                                  store,
+                                  total,
+                                  tendered,
+                                  printAfterPost: true,
+                                ),
+                          icon: const Icon(Icons.print_outlined),
+                          label: const Text('Post & print (F9)'),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton.icon(
+                          onPressed: () => _openPrinterDialog(store),
+                          icon: const Icon(Icons.settings_outlined),
+                          label: Text(
+                            store.receiptPrinterName.isEmpty
+                                ? 'Printer: Windows default'
+                                : 'Printer: ${store.receiptPrinterName}',
+                          ),
+                        ),
                         if (!restaurantMenuMode) ...[
                           const SizedBox(height: 12),
                           const Divider(height: 1),
@@ -3332,24 +3264,7 @@ class _PosViewState extends State<PosView> {
                     ),
                   ),
                 ),
-              ];
-            if (restaurantMenuMode) {
-              return SizedBox(
-                height: panelHeight,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    panels[0],
-                    const SizedBox(width: 16),
-                    panels[1],
-                  ],
-                ),
-              );
-            }
-            return Wrap(
-              spacing: 16,
-              runSpacing: 16,
-              children: panels,
+              ],
             );
           },
         ),
@@ -3373,9 +3288,8 @@ class _PosViewState extends State<PosView> {
           return a.name.compareTo(b.name);
         });
     if (windowsDesktopOnly) return products.take(10).toList();
-    if (menuMode) {
+    if (menuMode)
       return products.where((product) => product.posPriority > 0).toList();
-    }
     return products;
   }
 
@@ -3697,51 +3611,47 @@ class _PosViewState extends State<PosView> {
     }
   }
 
-}
-
-Future<void> _openReceiptPrinterDialog(
-  BuildContext context,
-  AppStore store,
-) async {
-  final controller = TextEditingController(text: store.receiptPrinterName);
-  final value = await showDialog<String>(
-    context: context,
-    builder: (dialogContext) {
-      return AlertDialog(
-        title: const Text('Receipt printer'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            prefixIcon: Icon(Icons.print_outlined),
-            labelText: 'Windows printer name',
-            helperText: 'Leave empty to use the Windows default printer',
-            border: OutlineInputBorder(),
+  Future<void> _openPrinterDialog(AppStore store) async {
+    final controller = TextEditingController(text: store.receiptPrinterName);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Receipt printer'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.print_outlined),
+              labelText: 'Windows printer name',
+              helperText: 'Leave empty to use the Windows default printer',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => Navigator.pop(dialogContext, controller.text),
           ),
-          onSubmitted: (_) => Navigator.pop(dialogContext, controller.text),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, ''),
-            child: const Text('Use default'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      );
-    },
-  );
-  controller.dispose();
-  if (value == null || !context.mounted) return;
-  await store.saveReceiptPrinterName(value);
-  if (!context.mounted) return;
-  _showMessage(context, store.syncStatus);
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, ''),
+              child: const Text('Use default'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, controller.text),
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    if (value == null || !mounted) return;
+    await store.saveReceiptPrinterName(value);
+    if (!mounted) return;
+    _showMessage(context, store.syncStatus);
+  }
 }
 
 class _CartTable extends StatelessWidget {
@@ -3752,7 +3662,6 @@ class _CartTable extends StatelessWidget {
     required this.onSelectLine,
     required this.onChangeQuantity,
     required this.onRemoveLine,
-    this.compact = false,
   });
 
   final List<InvoiceLine> cart;
@@ -3761,18 +3670,15 @@ class _CartTable extends StatelessWidget {
   final ValueChanged<int> onSelectLine;
   final void Function(int index, double delta) onChangeQuantity;
   final ValueChanged<int> onRemoveLine;
-  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     if (cart.isEmpty) {
-      if (compact) return const Center(child: Text('No items added'));
-      return SizedBox(
+      return const SizedBox(
         height: 72,
-        child: const Center(child: Text('No items added')),
+        child: Center(child: Text('No items added')),
       );
     }
-    if (compact) return _compactList(context);
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
@@ -3787,80 +3693,6 @@ class _CartTable extends StatelessWidget {
             _cartRow(context, index, cart[index]),
         ],
       ),
-    );
-  }
-
-  Widget _compactList(BuildContext context) {
-    return ListView.separated(
-      padding: EdgeInsets.zero,
-      itemCount: cart.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
-      itemBuilder: (context, index) {
-        final line = cart[index];
-        final selected = selectedLineIndex == index;
-        return Material(
-          color: selected
-              ? Theme.of(context).colorScheme.primary.withValues(alpha: .08)
-              : Colors.transparent,
-          child: InkWell(
-            onTap: () => onSelectLine(index),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          line.product.name,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          money.format(line.total),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    tooltip: 'Qty - (F6)',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => onChangeQuantity(index, -1),
-                    icon: const Icon(Icons.remove_circle_outline),
-                  ),
-                  SizedBox(
-                    width: 28,
-                    child: Text(
-                      line.quantity.toStringAsFixed(0),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Qty + (F7)',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => onChangeQuantity(index, 1),
-                    icon: const Icon(Icons.add_circle_outline),
-                  ),
-                  IconButton(
-                    tooltip: 'Remove item (Delete)',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => onRemoveLine(index),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -3916,168 +3748,6 @@ class _CartTable extends StatelessWidget {
   }
 }
 
-class _RestaurantPaymentControls extends StatelessWidget {
-  const _RestaurantPaymentControls({
-    required this.money,
-    required this.subtotal,
-    required this.discount,
-    required this.total,
-    required this.tendered,
-    required this.balanceOrChange,
-    required this.paymentMethod,
-    required this.amountPaid,
-    required this.cartIsEmpty,
-    required this.onPaymentMethodChanged,
-    required this.onAmountChanged,
-    required this.onPost,
-    required this.onPrint,
-    this.onDiscount,
-  });
-
-  final intl.NumberFormat money;
-  final double subtotal;
-  final double discount;
-  final double total;
-  final double tendered;
-  final double balanceOrChange;
-  final String paymentMethod;
-  final TextEditingController amountPaid;
-  final bool cartIsEmpty;
-  final VoidCallback? onDiscount;
-  final ValueChanged<String> onPaymentMethodChanged;
-  final VoidCallback onAmountChanged;
-  final VoidCallback onPost;
-  final VoidCallback onPrint;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _CompactAmountRow(label: 'Subtotal', value: money.format(subtotal)),
-        Row(
-          children: [
-            Expanded(
-              child: _CompactAmountRow(
-                label: 'Discount',
-                value: money.format(discount),
-              ),
-            ),
-            IconButton(
-              tooltip: 'Set discount (F4)',
-              visualDensity: VisualDensity.compact,
-              onPressed: onDiscount,
-              icon: const Icon(Icons.percent_outlined),
-            ),
-          ],
-        ),
-        const Divider(height: 12),
-        _CompactAmountRow(
-          label: 'Grand total',
-          value: money.format(total),
-          strong: true,
-        ),
-        const SizedBox(height: 8),
-        SegmentedButton<String>(
-          showSelectedIcon: false,
-          segments: const [
-            ButtonSegment(value: 'Cash', icon: Icon(Icons.payments_outlined)),
-            ButtonSegment(value: 'Card', icon: Icon(Icons.credit_card)),
-            ButtonSegment(value: 'Credit', icon: Icon(Icons.schedule_outlined)),
-          ],
-          selected: {paymentMethod},
-          onSelectionChanged: (value) => onPaymentMethodChanged(value.first),
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          controller: amountPaid,
-          enabled: paymentMethod != 'Credit',
-          keyboardType: TextInputType.number,
-          decoration: InputDecoration(
-            isDense: true,
-            prefixIcon: const Icon(Icons.payments_outlined),
-            labelText: paymentMethod == 'Cash' ? 'Cash received' : 'Amount paid',
-            hintText: total > 0 ? total.toStringAsFixed(0) : '0',
-            border: const OutlineInputBorder(),
-          ),
-          onChanged: (_) => onAmountChanged(),
-        ),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Expanded(
-              child: _CompactAmountRow(
-                label: 'Paid',
-                value: money.format(tendered),
-              ),
-            ),
-            Expanded(
-              child: _CompactAmountRow(
-                label: paymentMethod == 'Credit' ? 'Due' : 'Change',
-                value: money.format(balanceOrChange),
-                strong: balanceOrChange > 0,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: cartIsEmpty ? null : onPost,
-                icon: const Icon(Icons.receipt_long_outlined),
-                label: const Text('Post'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: cartIsEmpty ? null : onPrint,
-                icon: const Icon(Icons.print_outlined),
-                label: const Text('Print'),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _CompactAmountRow extends StatelessWidget {
-  const _CompactAmountRow({
-    required this.label,
-    required this.value,
-    this.strong = false,
-  });
-
-  final String label;
-  final String value;
-  final bool strong;
-
-  @override
-  Widget build(BuildContext context) {
-    final style = strong
-        ? Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w800,
-          )
-        : Theme.of(context).textTheme.bodyMedium;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
-        ],
-      ),
-    );
-  }
-}
-
 class _RestaurantMenuGrid extends StatelessWidget {
   const _RestaurantMenuGrid({
     required this.products,
@@ -4100,7 +3770,7 @@ class _RestaurantMenuGrid extends StatelessWidget {
       );
     }
     return GridView.builder(
-      padding: EdgeInsets.zero,
+      shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 170,
@@ -4750,14 +4420,12 @@ class AppPanel extends StatelessWidget {
     required this.child,
     this.action,
     this.horizontalScroll = true,
-    this.fillBody = false,
   });
 
   final String title;
   final Widget child;
   final Widget? action;
   final bool horizontalScroll;
-  final bool fillBody;
 
   @override
   Widget build(BuildContext context) {
@@ -4781,24 +4449,17 @@ class AppPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 14),
-            if (fillBody)
-              Expanded(child: _panelBody)
+            if (horizontalScroll)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: child,
+              )
             else
-              _panelBody,
+              child,
           ],
         ),
       ),
     );
-  }
-
-  Widget get _panelBody {
-    if (horizontalScroll) {
-      return SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: child,
-      );
-    }
-    return child;
   }
 }
 
@@ -5315,12 +4976,10 @@ String _invoiceReceiptText(
     );
   }
   rule();
-  if (invoice.discountAmount > 0) {
+  if (invoice.discountAmount > 0)
     pair('Discount', '-${money.format(invoice.discountAmount)}');
-  }
-  if (invoice.tendered > invoice.paid) {
+  if (invoice.tendered > invoice.paid)
     pair('Tendered', money.format(invoice.tendered));
-  }
   if (invoice.changeDue > 0) pair('Change', money.format(invoice.changeDue));
   pair('Paid', money.format(invoice.paid));
   pair('Due', money.format(invoice.due));
@@ -5551,11 +5210,10 @@ String _code39Svg(String value) {
     final pattern = patterns[char] ?? patterns['-']!;
     for (var i = 0; i < pattern.length; i++) {
       final width = pattern[i] == 'w' ? wide : narrow;
-      if (i.isEven) {
+      if (i.isEven)
         bars.write(
           '<rect x="${x.toStringAsFixed(1)}" y="0" width="${width.toStringAsFixed(1)}" height="$height" />',
         );
-      }
       x += width;
     }
     x += narrow;
