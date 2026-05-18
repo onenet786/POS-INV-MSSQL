@@ -137,8 +137,8 @@ class ApiClient {
   ApiClient({
     this.baseUrl = const String.fromEnvironment(
       'API_BASE_URL',
-      defaultValue: 'http://pos.flaura.pk:4100/api',
-      // defaultValue: 'http://192.168.85.235:4100/api',
+      // defaultValue: 'http://pos.flaura.pk:4100/api',
+      defaultValue: 'http://192.168.85.235:4100/api',
     ),
   });
 
@@ -1304,7 +1304,6 @@ class AppStore extends ChangeNotifier {
     SyncJob? job,
   }) async {
     try {
-      final branchId = await _resolveSqlBranchId(user);
       final roleId =
           roleIds[user.role] ??
           switch (user.role) {
@@ -1318,7 +1317,7 @@ class AppStore extends ChangeNotifier {
           'email': user.email,
           'password': user.defaultPassword,
           'roleId': roleId,
-          'branchId': branchId,
+          'branchId': user.branchId,
           'branchTypeCode': _branchTypeCode(user.branchType),
         });
         final created = row['0'] is Map
@@ -1329,7 +1328,7 @@ class AppStore extends ChangeNotifier {
         await api.put('/users/${user.id}', {
           'fullName': user.name,
           'roleId': roleId,
-          'branchId': branchId,
+          'branchId': user.branchId,
           'branchTypeCode': _branchTypeCode(user.branchType),
           'isActive': user.active,
         });
@@ -1344,65 +1343,6 @@ class AppStore extends ChangeNotifier {
       if (queueOnFail && job != null) _enqueueSyncJob(job);
       _setSyncStatus('SQL user save failed: ${_shortError(error)}');
       if (!queueOnFail) rethrow;
-    }
-  }
-
-  Future<int?> _resolveSqlBranchId(AppUser user) async {
-    final requestedBranchId = user.branchId;
-    final requestedBranch = requestedBranchId == null
-        ? null
-        : branches
-              .where((branch) => branch.id == requestedBranchId)
-              .firstOrNull;
-
-    try {
-      final reference = await api.getMap('/reference');
-      final sqlBranches = _list(
-        reference['branches'],
-      ).map(BranchProfile.fromApi).toList();
-      if (sqlBranches.isEmpty) return null;
-
-      final exactMatch = requestedBranchId == null
-          ? null
-          : sqlBranches.where((branch) => branch.id == requestedBranchId);
-      if (exactMatch != null && exactMatch.isNotEmpty) {
-        return exactMatch.first.id;
-      }
-
-      if (requestedBranch != null) {
-        final codeMatch = sqlBranches.where(
-          (branch) =>
-              branch.code.toLowerCase() == requestedBranch.code.toLowerCase(),
-        );
-        if (codeMatch.isNotEmpty) return codeMatch.first.id;
-
-        final nameMatch = sqlBranches.where(
-          (branch) =>
-              branch.name.toLowerCase() == requestedBranch.name.toLowerCase(),
-        );
-        if (nameMatch.isNotEmpty) return nameMatch.first.id;
-      }
-
-      final activeMatch = sqlBranches.where(
-        (branch) => branch.id == activeBranch.id,
-      );
-      if (activeMatch.isNotEmpty) return activeMatch.first.id;
-
-      final typeMatch = sqlBranches.where(
-        (branch) =>
-            _normalizedBranchType(branch.type) ==
-            _normalizedBranchType(user.branchType),
-      );
-      return typeMatch.isNotEmpty ? typeMatch.first.id : sqlBranches.first.id;
-    } catch (_) {
-      if (requestedBranchId == null) return null;
-      final localMatch = branches.where(
-        (branch) => branch.id == requestedBranchId,
-      );
-      if (localMatch.isNotEmpty || activeBranch.id == requestedBranchId) {
-        return requestedBranchId;
-      }
-      return null;
     }
   }
 

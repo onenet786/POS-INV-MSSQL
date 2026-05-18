@@ -15,29 +15,35 @@ Enterprise inventory, POS, invoicing, barcode/QR, reporting, and multi-branch ma
 ## Quick Start
 
 1. Create the database:
+
    ```sql
    sqlcmd -S localhost -U sa -P "YourStrong!Passw0rd" -i database/schema.sql
    sqlcmd -S localhost -U sa -P "YourStrong!Passw0rd" -i database/seed.sql
    ```
 
 2. Configure backend:
+
    ```bash
    cd backend
    copy .env.example .env
    npm install
    npm run dev
    ```
+
    Swagger docs are available at `http://localhost:4100/docs/`.
 
    For LAN/public access, set these values in `backend/.env`:
+
    ```env
    HOST=0.0.0.0
    PUBLIC_API_URL=http://192.168.85.235:4100
    CORS_ORIGIN=*
    ```
+
    Then open `http://192.168.85.235:4100/docs/`. For access from the internet, also allow TCP port `4100` in Windows Firewall and forward port `4100` on the router to this PC.
 
 3. Run Flutter:
+
    ```bash
    flutter pub get
    flutter run -d windows

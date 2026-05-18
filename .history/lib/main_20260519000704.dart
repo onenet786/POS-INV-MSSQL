@@ -1351,15 +1351,13 @@ class AppStore extends ChangeNotifier {
     final requestedBranchId = user.branchId;
     final requestedBranch = requestedBranchId == null
         ? null
-        : branches
-              .where((branch) => branch.id == requestedBranchId)
-              .firstOrNull;
+        : branches.where((branch) => branch.id == requestedBranchId).firstOrNull;
 
     try {
       final reference = await api.getMap('/reference');
-      final sqlBranches = _list(
-        reference['branches'],
-      ).map(BranchProfile.fromApi).toList();
+      final sqlBranches = _list(reference['branches'])
+          .map(BranchProfile.fromApi)
+          .toList();
       if (sqlBranches.isEmpty) return null;
 
       final exactMatch = requestedBranchId == null
@@ -1396,9 +1394,7 @@ class AppStore extends ChangeNotifier {
       return typeMatch.isNotEmpty ? typeMatch.first.id : sqlBranches.first.id;
     } catch (_) {
       if (requestedBranchId == null) return null;
-      final localMatch = branches.where(
-        (branch) => branch.id == requestedBranchId,
-      );
+      final localMatch = branches.where((branch) => branch.id == requestedBranchId);
       if (localMatch.isNotEmpty || activeBranch.id == requestedBranchId) {
         return requestedBranchId;
       }
