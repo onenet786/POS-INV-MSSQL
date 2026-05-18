@@ -1,11 +1,12 @@
 POS-INV-MSSQL Windows Installer Package
 
 Install:
-1. Extract this ZIP.
-2. Install Node.js LTS if it is not already installed.
-3. Right-click install.ps1 and choose "Run with PowerShell".
+1. Install Node.js LTS if it is not already installed.
+2. Double-click POS-INV-MSSQL-Setup.exe.
 
-If PowerShell blocks scripts, run this command from the extracted folder:
+The setup executable installs the app, backend files, database scripts, shortcuts, and local API startup task.
+
+Manual ZIP install is also available. Extract POS-INV-MSSQL-Windows.zip, then run:
 
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 
@@ -41,6 +42,10 @@ Use the "Uninstall POS-INV-MSSQL" shortcut in the Start Menu.
 Build this package from the repository root with:
 
 powershell -ExecutionPolicy Bypass -File .\packaging\windows\build-package.ps1
+
+The build creates:
+- dist\windows-installer\POS-INV-MSSQL-Setup.exe
+- dist\windows-installer\POS-INV-MSSQL-Windows.zip
 
 To compile the Flutter app with a specific API URL:
 

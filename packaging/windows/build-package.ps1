@@ -3,7 +3,8 @@ param(
   [string]$ApiBaseUrl = "",
   [switch]$SkipFlutterBuild,
   [switch]$SkipBackendBuild,
-  [switch]$BundleNodeModules
+  [switch]$BundleNodeModules,
+  [switch]$SkipExeInstaller
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,6 +14,7 @@ $distRoot = Join-Path $repoRoot "dist\windows-installer"
 $packageRoot = Join-Path $distRoot "package"
 $appName = "POS-INV-MSSQL"
 $zipPath = Join-Path $distRoot "$appName-Windows.zip"
+$exePath = Join-Path $distRoot "$appName-Setup.exe"
 $flutterReleaseDir = Join-Path $repoRoot "build\windows\x64\runner\$Configuration"
 
 if (-not $SkipBackendBuild) {
@@ -73,3 +75,123 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 Write-Host "Windows installer package created:"
 Write-Host $zipPath
+
+if (-not $SkipExeInstaller) {
+  $bootstrapRoot = Join-Path $distRoot "setup-bootstrap"
+  if (Test-Path $bootstrapRoot) {
+    Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force
+  }
+  New-Item -ItemType Directory -Force -Path $bootstrapRoot | Out-Null
+
+  $payloadZip = Join-Path $bootstrapRoot "payload.zip"
+  Copy-Item -Path $zipPath -Destination $payloadZip -Force
+
+  if (Test-Path $exePath) {
+    Remove-Item -LiteralPath $exePath -Force
+  }
+
+  $bootstrapSource = Join-Path $bootstrapRoot "SetupBootstrap.cs"
+  $bootstrapCode = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.Reflection;
+using System.Windows.Forms;
+
+internal static class SetupBootstrap
+{
+    [STAThread]
+    private static int Main()
+    {
+        try
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), "POS-INV-MSSQL-Setup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempRoot);
+
+            using (Stream payload = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))
+            {
+                if (payload == null)
+                {
+                    throw new InvalidOperationException("The setup payload is missing.");
+                }
+
+                string zipPath = Path.Combine(tempRoot, "payload.zip");
+                using (FileStream output = File.Create(zipPath))
+                {
+                    payload.CopyTo(output);
+                }
+
+                ZipFile.ExtractToDirectory(zipPath, tempRoot);
+            }
+
+            string installer = Path.Combine(tempRoot, "install.ps1");
+            if (!File.Exists(installer))
+            {
+                throw new FileNotFoundException("install.ps1 was not found in the setup payload.", installer);
+            }
+
+            ProcessStartInfo startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + installer + "\"",
+                UseShellExecute = true,
+                WorkingDirectory = tempRoot
+            };
+
+            using (Process process = Process.Start(startInfo))
+            {
+                process.WaitForExit();
+                return process.ExitCode;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "POS-INV-MSSQL Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+}
+'@
+  Set-Content -Path $bootstrapSource -Value $bootstrapCode -Encoding UTF8
+
+  $cscCandidates = @(
+    "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+    "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe",
+    "C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\Roslyn\csc.exe"
+  )
+  $csc = $cscCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if (-not $csc) {
+    $cscCommand = Get-Command csc.exe -ErrorAction SilentlyContinue
+    if ($cscCommand) {
+      $csc = $cscCommand.Source
+    }
+  }
+  if (-not $csc) {
+    throw "csc.exe was not found. Cannot compile the Windows setup executable on this machine."
+  }
+
+  $frameworkDir = Split-Path -Parent $csc
+  $compressionDll = Join-Path $frameworkDir "System.IO.Compression.dll"
+  $compressionFsDll = Join-Path $frameworkDir "System.IO.Compression.FileSystem.dll"
+
+  $cscArgs = @(
+    "/nologo",
+    "/target:winexe",
+    "/optimize+",
+    "/out:$exePath",
+    "/resource:$payloadZip,payload.zip",
+    "/reference:System.Windows.Forms.dll",
+    "/reference:$compressionDll",
+    "/reference:$compressionFsDll",
+    $bootstrapSource
+  )
+  & $csc @cscArgs
+
+  if (-not (Test-Path $exePath)) {
+    throw "The setup compiler did not create the expected installer executable at $exePath"
+  }
+
+  Write-Host "Windows setup executable created:"
+  Write-Host $exePath
+}
