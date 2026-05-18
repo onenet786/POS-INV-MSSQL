@@ -5236,6 +5236,7 @@ class UsersView extends StatelessWidget {
           DataColumn(label: Text('Name')),
           DataColumn(label: Text('Email')),
           DataColumn(label: Text('Role')),
+          DataColumn(label: Text('Branch')),
           DataColumn(label: Text('Branch type')),
           DataColumn(label: Text('Status')),
           DataColumn(label: Text('Actions')),
@@ -5247,6 +5248,7 @@ class UsersView extends StatelessWidget {
                 DataCell(Text(user.name)),
                 DataCell(Text(user.email)),
                 DataCell(Text(user.role)),
+                DataCell(Text(_branchNameForUser(store, user))),
                 DataCell(Text(user.branchType)),
                 DataCell(
                   StatusPill(label: user.active ? 'Active' : 'Disabled'),
@@ -5606,6 +5608,18 @@ class StatusPill extends StatelessWidget {
 enum ReportExport { pdf, excel }
 
 AppUser _currentUser(BuildContext context) => UserScope.of(context);
+
+String _branchNameForUser(AppStore store, AppUser user) {
+  final branchId = user.branchId;
+  if (branchId == null) return 'All branches';
+  for (final branch in store.branches) {
+    if (branch.id == branchId) return '${branch.name} (${branch.code})';
+  }
+  if (store.activeBranch.id == branchId) {
+    return '${store.activeBranch.name} (${store.activeBranch.code})';
+  }
+  return 'Branch #$branchId';
+}
 
 bool _canEditParty(AppUser user, PartyKind kind) {
   return kind == PartyKind.customer ? user.canUsePos : user.canManageOperations;
@@ -6431,9 +6445,21 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
   final name = TextEditingController(text: user?.name ?? '');
   final email = TextEditingController(text: user?.email ?? '');
   final password = TextEditingController(text: user?.password ?? '');
+  final branches = store.branches.isEmpty
+      ? <BranchProfile>[store.activeBranch]
+      : List<BranchProfile>.of(store.branches);
+  int selectedBranchId = user?.branchId ?? store.activeBranch.id;
+  BranchProfile selectedBranch = branches.firstWhere(
+    (branch) => branch.id == selectedBranchId,
+    orElse: () => store.activeBranch,
+  );
+  if (!branches.any((branch) => branch.id == selectedBranch.id)) {
+    branches.add(selectedBranch);
+  }
+  selectedBranchId = selectedBranch.id;
   String role = user?.role ?? 'Cashier';
   String branchType = _normalizedBranchType(
-    user?.branchType ?? store.activeBranch.type,
+    user?.branchType ?? selectedBranch.type,
   );
   bool active = user?.active ?? true;
   await _showFormDialog(
@@ -6474,7 +6500,35 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
                 onChanged: (value) =>
                     setDialogState(() => role = value ?? role),
               ),
+              DropdownButtonFormField<int>(
+                key: ValueKey('user-branch-$selectedBranchId'),
+                initialValue: selectedBranchId,
+                decoration: const InputDecoration(labelText: 'Branch'),
+                items: branches
+                    .map(
+                      (branch) => DropdownMenuItem(
+                        value: branch.id,
+                        child: Text('${branch.name} (${branch.code})'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value == null) return;
+                  final branch = branches.firstWhere(
+                    (item) => item.id == value,
+                    orElse: () => selectedBranch,
+                  );
+                  setDialogState(() {
+                    selectedBranchId = branch.id;
+                    selectedBranch = branch;
+                    branchType = _normalizedBranchType(branch.type);
+                  });
+                },
+              ),
               DropdownButtonFormField<String>(
+                key: ValueKey(
+                  'user-branch-type-${_normalizedBranchType(branchType)}',
+                ),
                 initialValue: _normalizedBranchType(branchType),
                 decoration: const InputDecoration(labelText: 'Branch type'),
                 items: const ['Retail', 'Restaurant', 'Hotel']
@@ -6483,8 +6537,21 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
                           DropdownMenuItem(value: item, child: Text(item)),
                     )
                     .toList(),
-                onChanged: (value) =>
-                    setDialogState(() => branchType = value ?? branchType),
+                onChanged: (value) {
+                  final nextType = value ?? branchType;
+                  final matchingBranch = branches.where(
+                    (branch) =>
+                        _normalizedBranchType(branch.type) ==
+                        _normalizedBranchType(nextType),
+                  );
+                  setDialogState(() {
+                    branchType = nextType;
+                    if (matchingBranch.isNotEmpty) {
+                      selectedBranch = matchingBranch.first;
+                      selectedBranchId = selectedBranch.id;
+                    }
+                  });
+                },
               ),
               SwitchListTile(
                 value: active,
@@ -6504,7 +6571,7 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
         role: role,
         active: active,
         password: password.text.trim(),
-        branchId: user?.branchId ?? store.activeBranch.id,
+        branchId: selectedBranchId,
         branchType: branchType,
       ),
     ),
