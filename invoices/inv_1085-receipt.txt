@@ -1,0 +1,20 @@
+         POS-INV-MSSQL          
+--------------------------------
+Invoice                 INV-1085
+Date            2026-05-18 14:32
+Customer        Walk-in Customer
+Payment                     Cash
+--------------------------------
+Refrigerator
+1 x PKR 88,000        PKR 88,000
+Oven
+1 x PKR 25,000        PKR 25,000
+--------------------------------
+Paid                 PKR 113,000
+Due                        PKR 0
+--------------------------------
+GRAND TOTAL          PKR 113,000
+--------------------------------
+Thank you
+
+

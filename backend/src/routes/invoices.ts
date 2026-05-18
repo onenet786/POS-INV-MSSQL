@@ -130,6 +130,7 @@ invoicesRouter.post('/', requireAuth, requirePermission('sales.create'), async (
       branchId: z.number(),
       warehouseId: z.number(),
       customerId: z.number().nullable().optional(),
+      invoiceNo: z.string().min(3).max(60).optional(),
       discountAmount: z.number().default(0),
       payments: z.array(z.object({ method: z.string(), amount: z.number() })).default([]),
       items: z.array(z.object({
@@ -146,7 +147,7 @@ invoicesRouter.post('/', requireAuth, requirePermission('sales.create'), async (
     const taxAmount = body.items.reduce((sum, item) => sum + item.taxAmount, 0);
     const total = subtotal - body.discountAmount + taxAmount;
     const paidAmount = body.payments.reduce((sum, payment) => sum + payment.amount, 0);
-    const invoiceNo = `INV-${Date.now()}`;
+    const invoiceNo = body.invoiceNo?.trim() || `INV-${Date.now()}`;
 
     await transaction.begin();
     const request = new sql.Request(transaction);

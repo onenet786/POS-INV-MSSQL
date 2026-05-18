@@ -50,6 +50,7 @@ CREATE TABLE dbo.Users (
     UserId INT IDENTITY(1,1) PRIMARY KEY,
     TenantId INT NOT NULL,
     BranchId INT NULL,
+    BranchTypeId INT NULL,
     RoleId INT NOT NULL,
     FullName NVARCHAR(160) NOT NULL,
     Email NVARCHAR(180) NOT NULL,
@@ -89,6 +90,9 @@ ADD BranchTypeId INT NULL;
 
 ALTER TABLE dbo.Branches
 ADD CONSTRAINT FK_Branches_BranchTypes FOREIGN KEY (BranchTypeId) REFERENCES dbo.BranchTypes(BranchTypeId);
+
+ALTER TABLE dbo.Users
+ADD CONSTRAINT FK_Users_BranchTypes FOREIGN KEY (BranchTypeId) REFERENCES dbo.BranchTypes(BranchTypeId);
 
 CREATE TABLE dbo.Categories (
     CategoryId INT IDENTITY(1,1) PRIMARY KEY,

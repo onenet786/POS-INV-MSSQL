@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart' as intl;
 
 void main() {
@@ -144,7 +143,7 @@ class ApiClient {
 
   final String baseUrl;
   String? token;
-  final http.Client _client = http.Client();
+  HttpClient? _client;
 
   Future<Map<String, dynamic>> login(String email, String password) async {
     final data = await post('/auth/login', {
@@ -204,35 +203,18 @@ class ApiClient {
     Map<String, dynamic>? body,
     bool auth = true,
   }) async {
-    final headers = <String, String>{
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    };
+    if (kIsWeb) throw UnsupportedError('API sync is disabled in web preview');
+    final client = _client ??= HttpClient()
+      ..connectionTimeout = const Duration(seconds: 3);
+    final request = await client.openUrl(method, Uri.parse('$baseUrl$path'));
+    request.headers.contentType = ContentType.json;
+    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
     if (auth && token != null) {
-      headers['Authorization'] = 'Bearer $token';
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
     }
-    final uri = Uri.parse('$baseUrl$path');
-    final payload = body == null ? null : jsonEncode(body);
-    final response = switch (method) {
-      'GET' =>
-        await _client
-            .get(uri, headers: headers)
-            .timeout(const Duration(seconds: 8)),
-      'POST' =>
-        await _client
-            .post(uri, headers: headers, body: payload)
-            .timeout(const Duration(seconds: 8)),
-      'PUT' =>
-        await _client
-            .put(uri, headers: headers, body: payload)
-            .timeout(const Duration(seconds: 8)),
-      'DELETE' =>
-        await _client
-            .delete(uri, headers: headers)
-            .timeout(const Duration(seconds: 8)),
-      _ => throw UnsupportedError('Unsupported API method $method'),
-    };
-    final text = response.body;
+    if (body != null) request.write(jsonEncode(body));
+    final response = await request.close();
+    final text = await response.transform(utf8.decoder).join();
     final decoded = text.isEmpty ? null : jsonDecode(text);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final message = decoded is Map ? decoded['message']?.toString() : null;
@@ -346,20 +328,13 @@ class AppStore extends ChangeNotifier {
         ),
         AppUser(
           id: 2,
-          name: 'OneNet Solutions',
-          email: 'onenet@invpro.local',
-          role: 'Cashier',
-          active: true,
-        ),
-        AppUser(
-          id: 3,
           name: 'Store Manager',
           email: 'manager@invpro.local',
           role: 'Manager',
           active: true,
         ),
         AppUser(
-          id: 4,
+          id: 3,
           name: 'Front Cashier',
           email: 'cashier@invpro.local',
           role: 'Cashier',
@@ -417,14 +392,6 @@ class AppStore extends ChangeNotifier {
           quantity: 14,
           notes: 'Sale adjustment',
         ),
-      ],
-      branches = [
-        const BranchProfile(
-          id: 1,
-          name: 'Main Branch',
-          code: 'MAIN',
-          type: 'Retail',
-        ),
       ] {
     _loadFromDisk();
   }
@@ -438,7 +405,6 @@ class AppStore extends ChangeNotifier {
   final List<Invoice> invoices;
   final Map<int, List<InvoiceLine>> invoiceLinesByInvoiceId = {};
   final List<StockMovement> movements;
-  final List<BranchProfile> branches;
   final List<SyncJob> pendingSyncJobs = [];
   String receiptPrinterName = '';
   BranchProfile activeBranch = const BranchProfile(
@@ -455,7 +421,6 @@ class AppStore extends ChangeNotifier {
   int _nextExpenseId = 10;
   int _nextInvoiceId = 10491;
   int _nextMovementId = 10;
-  int _nextBranchId = 2;
   final ApiClient api = ApiClient();
   bool sqlConnected = false;
   String syncStatus = 'Local mode';
@@ -514,9 +479,6 @@ class AppStore extends ChangeNotifier {
       movements
         ..clear()
         ..addAll(_list(data['movements']).map(_movementFromJson));
-      branches
-        ..clear()
-        ..addAll(_list(data['branches']).map(BranchProfile.fromJson));
       pendingSyncJobs
         ..clear()
         ..addAll(_list(data['pendingSyncJobs']).map(SyncJob.fromJson));
@@ -526,7 +488,6 @@ class AppStore extends ChangeNotifier {
       activeBranch = BranchProfile.fromJson(
         Map<String, dynamic>.from((data['activeBranch'] as Map?) ?? const {}),
       );
-      if (branches.isEmpty) branches.add(activeBranch);
       _refreshNextIds();
     } catch (_) {
       final backup = File('${file.path}.bad');
@@ -550,7 +511,6 @@ class AppStore extends ChangeNotifier {
             MapEntry(key.toString(), value.map(_invoiceLineToJson).toList()),
       ),
       'movements': movements.map(_movementToJson).toList(),
-      'branches': branches.map((branch) => branch.toJson()).toList(),
       'pendingSyncJobs': pendingSyncJobs.map((job) => job.toJson()).toList(),
       'lastLoginEmail': lastLoginEmail,
       'lastLoginPassword': lastLoginPassword,
@@ -582,7 +542,6 @@ class AppStore extends ChangeNotifier {
       movements.map((item) => item.id),
       fallback: 10,
     );
-    _nextBranchId = _nextAfter(branches.map((item) => item.id), fallback: 2);
   }
 
   int _nextAfter(Iterable<int> ids, {required int fallback}) {
@@ -669,16 +628,11 @@ class AppStore extends ChangeNotifier {
     try {
       final reference = await api.getMap('/reference');
       final branches = _list(reference['branches']);
-      this.branches
-        ..clear()
-        ..addAll(branches.map(BranchProfile.fromApi));
       final userBranch = branches.where(
         (branch) => _int(branch, 'BranchId') == activeBranch.id,
       );
       if (userBranch.isNotEmpty) {
         activeBranch = BranchProfile.fromApi(userBranch.first);
-      } else if (this.branches.isNotEmpty) {
-        activeBranch = this.branches.first;
       }
     } catch (_) {}
 
@@ -753,9 +707,10 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> saveActiveBranchType(String branchType) async {
-    final normalizedType = _normalizedBranchType(branchType);
+    final normalizedType = branchType.toLowerCase().contains('restaurant')
+        ? 'Restaurant'
+        : 'Retail';
     activeBranch = activeBranch.copyWith(type: normalizedType);
-    _upsertBranchInMemory(activeBranch);
     for (var index = 0; index < users.length; index++) {
       final user = users[index];
       if (user.branchId == activeBranch.id) {
@@ -770,7 +725,9 @@ class AppStore extends ChangeNotifier {
     }
     try {
       await api.put('/reference/branches/${activeBranch.id}/type', {
-        'branchTypeCode': _branchTypeCode(normalizedType),
+        'branchTypeCode': normalizedType == 'Restaurant'
+            ? 'RESTAURANT'
+            : 'RETAIL',
       });
       await loadSqlData();
       _setSyncStatus('Branch type saved to SQL Server');
@@ -778,68 +735,6 @@ class AppStore extends ChangeNotifier {
       _setSyncStatus(
         'Branch type saved locally; SQL save failed: ${_shortError(error)}',
       );
-    }
-  }
-
-  void selectBranch(BranchProfile branch) {
-    activeBranch = branch;
-    notifyListeners();
-  }
-
-  Future<void> createBranch({
-    required String name,
-    required String code,
-    required String branchType,
-    String address = '',
-  }) async {
-    final normalizedType = _normalizedBranchType(branchType);
-    final localBranch = BranchProfile(
-      id: _nextBranchId++,
-      name: name.trim(),
-      code: code.trim().toUpperCase(),
-      type: normalizedType,
-    );
-    activeBranch = localBranch;
-    branches.add(localBranch);
-    notifyListeners();
-    if (!sqlConnected) {
-      _setSyncStatus('Branch saved locally');
-      return;
-    }
-    try {
-      final row = await api.post('/reference/branches', {
-        'name': localBranch.name,
-        'code': localBranch.code,
-        'branchTypeCode': _branchTypeCode(normalizedType),
-        'address': address.trim(),
-      });
-      final savedBranch = BranchProfile.fromApi(
-        row,
-      ).copyWith(type: _string(row, 'BranchTypeName', normalizedType));
-      final index = branches.indexWhere(
-        (branch) => branch.id == localBranch.id,
-      );
-      if (index == -1) {
-        branches.add(savedBranch);
-      } else {
-        branches[index] = savedBranch;
-      }
-      activeBranch = savedBranch;
-      await loadSqlData();
-      _setSyncStatus('Branch saved to SQL Server');
-    } catch (error) {
-      _setSyncStatus(
-        'Branch saved locally; SQL save failed: ${_shortError(error)}',
-      );
-    }
-  }
-
-  void _upsertBranchInMemory(BranchProfile branch) {
-    final index = branches.indexWhere((item) => item.id == branch.id);
-    if (index == -1) {
-      branches.add(branch);
-    } else {
-      branches[index] = branch;
     }
   }
 
@@ -1318,7 +1213,6 @@ class AppStore extends ChangeNotifier {
           'password': user.defaultPassword,
           'roleId': roleId,
           'branchId': user.branchId,
-          'branchTypeCode': _branchTypeCode(user.branchType),
         });
         final created = row['0'] is Map
             ? Map<String, dynamic>.from(row['0'] as Map)
@@ -1329,7 +1223,6 @@ class AppStore extends ChangeNotifier {
           'fullName': user.name,
           'roleId': roleId,
           'branchId': user.branchId,
-          'branchTypeCode': _branchTypeCode(user.branchType),
           'isActive': user.active,
         });
         if (user.password.isNotEmpty) {
@@ -1854,21 +1747,6 @@ String? _nullable(String value) {
   return trimmed.isEmpty || trimmed == '-' ? null : trimmed;
 }
 
-String _normalizedBranchType(String value) {
-  final lower = value.toLowerCase();
-  if (lower.contains('hotel') || lower.contains('hotal')) return 'Hotel';
-  if (lower.contains('restaurant')) return 'Restaurant';
-  return 'Retail';
-}
-
-String _branchTypeCode(String value) {
-  return switch (_normalizedBranchType(value)) {
-    'Hotel' => 'HOTEL',
-    'Restaurant' => 'RESTAURANT',
-    _ => 'RETAIL',
-  };
-}
-
 String _shortError(Object error) {
   final text = error.toString().replaceFirst('HttpException: ', '');
   return text.length > 120 ? '${text.substring(0, 120)}...' : text;
@@ -2035,7 +1913,6 @@ class AppUser {
       ? password
       : switch (role) {
           'Admin' => 'Admin@12345',
-          'onenet' => 'Admin786',
           'Manager' => 'Manager@12345',
           _ => 'Cashier@12345',
         };
@@ -2085,9 +1962,7 @@ class BranchProfile {
   final String code;
   final String type;
 
-  bool get isRestaurant => _normalizedBranchType(type) == 'Restaurant';
-  bool get isHotel => _normalizedBranchType(type) == 'Hotel';
-  bool get isFoodService => isRestaurant || isHotel;
+  bool get isRestaurant => type.toLowerCase().contains('restaurant');
 
   BranchProfile copyWith({int? id, String? name, String? code, String? type}) {
     return BranchProfile(
@@ -2346,32 +2221,6 @@ class RestaurantOrder {
   final RestaurantOrderType type;
   final String reference;
   final String orderNo;
-}
-
-class HotelRunningOrder {
-  const HotelRunningOrder({
-    required this.order,
-    required this.lines,
-    required this.updatedAt,
-  });
-
-  final RestaurantOrder order;
-  final List<InvoiceLine> lines;
-  final DateTime updatedAt;
-
-  double get total => lines.fold(0.0, (sum, line) => sum + line.total);
-
-  HotelRunningOrder copyWith({
-    RestaurantOrder? order,
-    List<InvoiceLine>? lines,
-    DateTime? updatedAt,
-  }) {
-    return HotelRunningOrder(
-      order: order ?? this.order,
-      lines: lines ?? this.lines,
-      updatedAt: updatedAt ?? this.updatedAt,
-    );
-  }
 }
 
 class ModuleDef {
@@ -2677,12 +2526,6 @@ class _LoginPageState extends State<LoginPage> {
                             label: const Text('Manager'),
                             onPressed: () =>
                                 _fill('manager@invpro.local', 'Manager@12345'),
-                          ),
-                          ActionChip(
-                            visualDensity: VisualDensity.compact,
-                            label: const Text('onenet'),
-                            onPressed: () =>
-                                _fill('onenet@invpro.local', 'Admin786'),
                           ),
                           ActionChip(
                             visualDensity: VisualDensity.compact,
@@ -3121,23 +2964,17 @@ class PosView extends StatefulWidget {
 class _PosViewState extends State<PosView> {
   final search = TextEditingController();
   final amountPaid = TextEditingController();
-  final restaurantOrderRef = TextEditingController();
   final searchFocus = FocusNode();
   final List<InvoiceLine> cart = [];
-  final List<HotelRunningOrder> hotelRunningOrders = [];
   String paymentMethod = 'Cash';
   String customer = 'Walk-in Customer';
-  RestaurantOrder? activeRestaurantOrder;
-  RestaurantOrderType restaurantOrderType = RestaurantOrderType.table;
   double discountAmount = 0;
   int selectedLineIndex = 0;
-  int nextRestaurantOrderSequence = 1;
 
   @override
   void dispose() {
     search.dispose();
     amountPaid.dispose();
-    restaurantOrderRef.dispose();
     searchFocus.dispose();
     super.dispose();
   }
@@ -3200,40 +3037,25 @@ class _PosViewState extends State<PosView> {
             final restaurantTerminalSize =
                 tablet ||
                 (runsAndroid && landscape && constraints.maxWidth >= 560);
-            final scopedUser = _currentUser(context);
-            final currentUser =
-                store.users.where((user) {
-                  return user.id == scopedUser.id ||
-                      user.email.toLowerCase() ==
-                          scopedUser.email.toLowerCase();
-                }).firstOrNull ??
-                scopedUser;
-            final userBranchType = _normalizedBranchType(
-              currentUser.branchType,
-            );
+            final currentUser = _currentUser(context);
+            final userBranchIsRestaurant = currentUser.branchType
+                .toLowerCase()
+                .contains('restaurant');
             final activeBranchAppliesToUser =
                 currentUser.branchId == null ||
                 currentUser.branchId == store.activeBranch.id;
             final effectiveRestaurantBranch =
-                userBranchType == 'Restaurant' ||
+                userBranchIsRestaurant ||
                 (activeBranchAppliesToUser && store.activeBranch.isRestaurant);
-            final hotelMode =
-                userBranchType == 'Hotel' ||
-                (activeBranchAppliesToUser && store.activeBranch.isHotel);
-            final effectiveFoodServiceBranch =
-                effectiveRestaurantBranch || hotelMode;
             final restaurantMenuMode =
                 (kIsWeb || runsAndroid || runsWindows) &&
                 restaurantTerminalSize &&
-                effectiveFoodServiceBranch;
+                effectiveRestaurantBranch;
             final quickProducts = _posProducts(
               store,
               windowsDesktopOnly: runsWindows && wide,
               menuMode: restaurantMenuMode,
             );
-            if (!restaurantMenuMode && activeRestaurantOrder != null) {
-              activeRestaurantOrder = null;
-            }
             final twoPane = wide || restaurantMenuMode;
             final panelHeight =
                 (MediaQuery.sizeOf(context).height -
@@ -3257,42 +3079,6 @@ class _PosViewState extends State<PosView> {
                   ),
                   child: Column(
                     children: [
-                      if (restaurantMenuMode) ...[
-                        _RestaurantOrderHeader(
-                          order: activeRestaurantOrder,
-                          type: restaurantOrderType,
-                          reference: restaurantOrderRef,
-                          previewOrderNo: _restaurantOrderNumber(
-                            restaurantOrderType,
-                            restaurantOrderRef.text,
-                            nextRestaurantOrderSequence,
-                          ),
-                          onTypeChanged: (value) {
-                            setState(() {
-                              restaurantOrderType = value;
-                              restaurantOrderRef.clear();
-                              activeRestaurantOrder = null;
-                            });
-                          },
-                          onReferenceChanged:
-                              _resetActiveRestaurantOrderForInput,
-                          onStart: () =>
-                              _startRestaurantOrder(hotelMode: hotelMode),
-                          onClear: activeRestaurantOrder == null
-                              ? null
-                              : _clearRestaurantOrder,
-                        ),
-                        const SizedBox(height: 12),
-                        if (hotelMode) ...[
-                          _HotelRunningOrdersBar(
-                            orders: hotelRunningOrders,
-                            activeOrderNo: activeRestaurantOrder?.orderNo,
-                            money: money,
-                            onSelect: _selectHotelRunningOrder,
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                      ],
                       if (!restaurantMenuMode) ...[
                         TextField(
                           controller: search,
@@ -3331,9 +3117,7 @@ class _PosViewState extends State<PosView> {
                           child: _RestaurantMenuGrid(
                             products: quickProducts,
                             money: money,
-                            onAdd: activeRestaurantOrder == null
-                                ? null
-                                : _addProduct,
+                            onAdd: _addProduct,
                           ),
                         )
                       else
@@ -3444,16 +3228,12 @@ class _PosViewState extends State<PosView> {
                             });
                           },
                           onAmountChanged: () => setState(() {}),
-                          postLabel: hotelMode ? 'Close' : 'Post',
-                          printLabel: hotelMode ? 'Close & print' : 'Print',
                           onPost: () => unawaited(
                             _postInvoice(
                               store,
                               total,
                               tendered,
                               restaurantMode: true,
-                              restaurantOrder: activeRestaurantOrder,
-                              hotelMode: hotelMode,
                             ),
                           ),
                           onPrint: () => unawaited(
@@ -3463,8 +3243,6 @@ class _PosViewState extends State<PosView> {
                               tendered,
                               printAfterPost: true,
                               restaurantMode: true,
-                              restaurantOrder: activeRestaurantOrder,
-                              hotelMode: hotelMode,
                             ),
                           ),
                         )
@@ -3691,19 +3469,8 @@ class _PosViewState extends State<PosView> {
       amountPaid.clear();
       discountAmount = 0;
       selectedLineIndex = 0;
-      activeRestaurantOrder = null;
-      restaurantOrderRef.clear();
     });
     _focusSearch();
-  }
-
-  void _clearRestaurantOrder() {
-    setState(() {
-      activeRestaurantOrder = null;
-      restaurantOrderRef.clear();
-      selectedLineIndex = 0;
-      cart.clear();
-    });
   }
 
   void _changeSelectedQuantity(double delta) {
@@ -3730,7 +3497,6 @@ class _PosViewState extends State<PosView> {
       selectedLineIndex = index;
       cart[index] = InvoiceLine(product: line.product, quantity: nextQuantity);
     });
-    _syncActiveHotelOrderLines();
   }
 
   void _removeSelectedLine() {
@@ -3749,7 +3515,6 @@ class _PosViewState extends State<PosView> {
         selectedLineIndex = selectedLineIndex.clamp(0, cart.length - 1);
       }
     });
-    _syncActiveHotelOrderLines();
   }
 
   Future<void> _openDiscountDialog(double subtotal) async {
@@ -3929,77 +3694,6 @@ class _PosViewState extends State<PosView> {
         selectedLineIndex = index;
       }
     });
-    _syncActiveHotelOrderLines();
-  }
-
-  void _resetActiveRestaurantOrderForInput() {
-    if (activeRestaurantOrder == null) {
-      setState(() {});
-      return;
-    }
-    setState(() {
-      activeRestaurantOrder = null;
-      cart.clear();
-      amountPaid.clear();
-      discountAmount = 0;
-      selectedLineIndex = 0;
-    });
-  }
-
-  void _startRestaurantOrder({required bool hotelMode}) {
-    final order = _restaurantOrderFromInput(
-      restaurantOrderType,
-      restaurantOrderRef.text,
-      nextRestaurantOrderSequence,
-    );
-    if (order == null) {
-      _showMessage(
-        context,
-        'Enter ${restaurantOrderType == RestaurantOrderType.table ? 'table number' : 'take away token'} first',
-      );
-      return;
-    }
-    setState(() {
-      activeRestaurantOrder = order;
-      nextRestaurantOrderSequence += 1;
-      if (hotelMode) {
-        cart.clear();
-        selectedLineIndex = 0;
-        hotelRunningOrders.insert(
-          0,
-          HotelRunningOrder(
-            order: order,
-            lines: const [],
-            updatedAt: DateTime.now(),
-          ),
-        );
-      }
-    });
-  }
-
-  void _syncActiveHotelOrderLines() {
-    final order = activeRestaurantOrder;
-    if (order == null) return;
-    final index = hotelRunningOrders.indexWhere(
-      (item) => item.order.orderNo == order.orderNo,
-    );
-    if (index == -1) return;
-    hotelRunningOrders[index] = hotelRunningOrders[index].copyWith(
-      lines: List<InvoiceLine>.of(cart),
-      updatedAt: DateTime.now(),
-    );
-  }
-
-  void _selectHotelRunningOrder(HotelRunningOrder runningOrder) {
-    setState(() {
-      activeRestaurantOrder = runningOrder.order;
-      restaurantOrderType = runningOrder.order.type;
-      restaurantOrderRef.text = runningOrder.order.reference;
-      cart
-        ..clear()
-        ..addAll(runningOrder.lines);
-      selectedLineIndex = cart.isEmpty ? 0 : cart.length - 1;
-    });
   }
 
   Future<void> _postInvoice(
@@ -4008,9 +3702,11 @@ class _PosViewState extends State<PosView> {
     double tendered, {
     bool printAfterPost = false,
     bool restaurantMode = false,
-    RestaurantOrder? restaurantOrder,
-    bool hotelMode = false,
   }) async {
+    final restaurantOrder = restaurantMode
+        ? await _openRestaurantOrderDialog(store)
+        : null;
+    if (!mounted) return;
     if (restaurantMode && restaurantOrder == null) return;
     final lines = List<InvoiceLine>.of(cart);
     final paid = paymentMethod == 'Credit'
@@ -4030,13 +3726,6 @@ class _PosViewState extends State<PosView> {
       amountPaid.clear();
       discountAmount = 0;
       selectedLineIndex = 0;
-      activeRestaurantOrder = null;
-      restaurantOrderRef.clear();
-      if (hotelMode && restaurantOrder != null) {
-        hotelRunningOrders.removeWhere(
-          (item) => item.order.orderNo == restaurantOrder.orderNo,
-        );
-      }
     });
     if (printAfterPost) {
       unawaited(
@@ -4088,24 +3777,134 @@ class _PosViewState extends State<PosView> {
     }
   }
 
+  Future<RestaurantOrder?> _openRestaurantOrderDialog(AppStore store) async {
+    var type = RestaurantOrderType.table;
+    final reference = TextEditingController();
+    final order = await showDialog<RestaurantOrder>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final orderNo = _restaurantOrderNumber(type, reference.text, store);
+            return AlertDialog(
+              title: const Text('Order type'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SegmentedButton<RestaurantOrderType>(
+                    segments: const [
+                      ButtonSegment(
+                        value: RestaurantOrderType.table,
+                        icon: Icon(Icons.table_restaurant_outlined),
+                        label: Text('Table'),
+                      ),
+                      ButtonSegment(
+                        value: RestaurantOrderType.takeAway,
+                        icon: Icon(Icons.takeout_dining_outlined),
+                        label: Text('Take away'),
+                      ),
+                    ],
+                    selected: {type},
+                    onSelectionChanged: (value) {
+                      setDialogState(() {
+                        type = value.first;
+                        reference.clear();
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: reference,
+                    autofocus: true,
+                    keyboardType: type == RestaurantOrderType.table
+                        ? TextInputType.number
+                        : TextInputType.text,
+                    decoration: InputDecoration(
+                      prefixIcon: Icon(
+                        type == RestaurantOrderType.table
+                            ? Icons.table_restaurant_outlined
+                            : Icons.takeout_dining_outlined,
+                      ),
+                      labelText: type == RestaurantOrderType.table
+                          ? 'Table number'
+                          : 'Take away name / token',
+                      border: const OutlineInputBorder(),
+                    ),
+                    onChanged: (_) => setDialogState(() {}),
+                    onSubmitted: (_) {
+                      final next = _restaurantOrderFromInput(
+                        type,
+                        reference.text,
+                        store,
+                      );
+                      if (next != null) Navigator.pop(dialogContext, next);
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.confirmation_number_outlined),
+                    title: Text(orderNo),
+                    subtitle: const Text('Generated order number'),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final next = _restaurantOrderFromInput(
+                      type,
+                      reference.text,
+                      store,
+                    );
+                    if (next == null) {
+                      ScaffoldMessenger.of(dialogContext).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            type == RestaurantOrderType.table
+                                ? 'Enter table number'
+                                : 'Enter take away name or token',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    Navigator.pop(dialogContext, next);
+                  },
+                  child: const Text('Post order'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    reference.dispose();
+    return order;
+  }
+
   RestaurantOrder? _restaurantOrderFromInput(
     RestaurantOrderType type,
     String input,
-    int sequence,
+    AppStore store,
   ) {
     final reference = input.trim();
     if (reference.isEmpty) return null;
     return RestaurantOrder(
       type: type,
       reference: reference,
-      orderNo: _restaurantOrderNumber(type, reference, sequence),
+      orderNo: _restaurantOrderNumber(type, reference, store),
     );
   }
 
   String _restaurantOrderNumber(
     RestaurantOrderType type,
     String input,
-    int sequence,
+    AppStore store,
   ) {
     final cleaned = input.trim().toUpperCase().replaceAll(
       RegExp(r'[^A-Z0-9]+'),
@@ -4114,7 +3913,7 @@ class _PosViewState extends State<PosView> {
     final ref = cleaned.isEmpty
         ? (type == RestaurantOrderType.table ? '00' : 'TA')
         : cleaned;
-    final suffix = sequence.toString().padLeft(4, '0');
+    final suffix = store._nextInvoiceId.toString().padLeft(4, '0');
     return type == RestaurantOrderType.table
         ? 'T$ref-$suffix'
         : 'TA-$ref-$suffix';
@@ -4164,196 +3963,6 @@ Future<void> _openReceiptPrinterDialog(
   await store.saveReceiptPrinterName(value);
   if (!context.mounted) return;
   _showMessage(context, store.syncStatus);
-}
-
-class _RestaurantOrderHeader extends StatelessWidget {
-  const _RestaurantOrderHeader({
-    required this.order,
-    required this.type,
-    required this.reference,
-    required this.previewOrderNo,
-    required this.onTypeChanged,
-    required this.onReferenceChanged,
-    required this.onStart,
-    required this.onClear,
-  });
-
-  final RestaurantOrder? order;
-  final RestaurantOrderType type;
-  final TextEditingController reference;
-  final String previewOrderNo;
-  final ValueChanged<RestaurantOrderType> onTypeChanged;
-  final VoidCallback onReferenceChanged;
-  final VoidCallback onStart;
-  final VoidCallback? onClear;
-
-  @override
-  Widget build(BuildContext context) {
-    final selected = order;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: SegmentedButton<RestaurantOrderType>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(
-                      value: RestaurantOrderType.table,
-                      icon: Icon(Icons.table_restaurant_outlined),
-                      label: Text('Table'),
-                    ),
-                    ButtonSegment(
-                      value: RestaurantOrderType.takeAway,
-                      icon: Icon(Icons.takeout_dining_outlined),
-                      label: Text('Take away'),
-                    ),
-                  ],
-                  selected: {type},
-                  onSelectionChanged: (value) => onTypeChanged(value.first),
-                ),
-              ),
-              if (selected != null)
-                IconButton(
-                  tooltip: 'Clear order',
-                  onPressed: onClear,
-                  icon: const Icon(Icons.close),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: reference,
-            keyboardType: type == RestaurantOrderType.table
-                ? TextInputType.number
-                : TextInputType.text,
-            decoration: InputDecoration(
-              isDense: true,
-              prefixIcon: Icon(
-                type == RestaurantOrderType.table
-                    ? Icons.table_restaurant_outlined
-                    : Icons.takeout_dining_outlined,
-              ),
-              labelText: type == RestaurantOrderType.table
-                  ? 'Table number'
-                  : 'Take away name / token',
-              border: const OutlineInputBorder(),
-            ),
-            onChanged: (_) => onReferenceChanged(),
-            onSubmitted: (_) {
-              if (selected == null) onStart();
-            },
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              const Icon(Icons.confirmation_number_outlined, size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  selected == null ? previewOrderNo : selected.orderNo,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
-              Text(
-                selected == null ? 'Not started' : 'Active',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: selected == null ? onStart : null,
-                icon: const Icon(Icons.play_arrow_outlined, size: 18),
-                label: const Text('Start'),
-              ),
-            ],
-          ),
-          if (selected == null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                'Enter ${type == RestaurantOrderType.table ? 'table number' : 'take away token'} before adding items',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HotelRunningOrdersBar extends StatelessWidget {
-  const _HotelRunningOrdersBar({
-    required this.orders,
-    required this.activeOrderNo,
-    required this.money,
-    required this.onSelect,
-  });
-
-  final List<HotelRunningOrder> orders;
-  final String? activeOrderNo;
-  final intl.NumberFormat money;
-  final ValueChanged<HotelRunningOrder> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    if (orders.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    return SizedBox(
-      height: 58,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: orders.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final order = orders[index];
-          final selected = activeOrderNo == order.order.orderNo;
-          return ChoiceChip(
-            selected: selected,
-            avatar: Icon(
-              order.order.type == RestaurantOrderType.table
-                  ? Icons.table_restaurant_outlined
-                  : Icons.takeout_dining_outlined,
-              size: 18,
-            ),
-            label: SizedBox(
-              width: 132,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    order.order.orderNo,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text(
-                    '${order.lines.length} item(s)  ${money.format(order.total)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-            onSelected: (_) => onSelect(order),
-          );
-        },
-      ),
-    );
-  }
 }
 
 class _CartTable extends StatelessWidget {
@@ -4541,8 +4150,6 @@ class _RestaurantPaymentControls extends StatelessWidget {
     required this.cartIsEmpty,
     required this.onPaymentMethodChanged,
     required this.onAmountChanged,
-    required this.postLabel,
-    required this.printLabel,
     required this.onPost,
     required this.onPrint,
     this.onDiscount,
@@ -4560,8 +4167,6 @@ class _RestaurantPaymentControls extends StatelessWidget {
   final VoidCallback? onDiscount;
   final ValueChanged<String> onPaymentMethodChanged;
   final VoidCallback onAmountChanged;
-  final String postLabel;
-  final String printLabel;
   final VoidCallback onPost;
   final VoidCallback onPrint;
 
@@ -4646,7 +4251,7 @@ class _RestaurantPaymentControls extends StatelessWidget {
               child: FilledButton.icon(
                 onPressed: cartIsEmpty ? null : onPost,
                 icon: const Icon(Icons.receipt_long_outlined),
-                label: Text(postLabel),
+                label: const Text('Post'),
               ),
             ),
             const SizedBox(width: 8),
@@ -4654,7 +4259,7 @@ class _RestaurantPaymentControls extends StatelessWidget {
               child: OutlinedButton.icon(
                 onPressed: cartIsEmpty ? null : onPrint,
                 icon: const Icon(Icons.print_outlined),
-                label: Text(printLabel),
+                label: const Text('Print'),
               ),
             ),
           ],
@@ -4710,7 +4315,7 @@ class _RestaurantMenuGrid extends StatelessWidget {
 
   final List<Product> products;
   final intl.NumberFormat money;
-  final ValueChanged<Product>? onAdd;
+  final ValueChanged<Product> onAdd;
 
   @override
   Widget build(BuildContext context) {
@@ -4735,9 +4340,7 @@ class _RestaurantMenuGrid extends StatelessWidget {
       itemBuilder: (context, index) {
         final product = products[index];
         return FilledButton.tonal(
-          onPressed: product.stock <= 0 || onAdd == null
-              ? null
-              : () => onAdd!(product),
+          onPressed: product.stock <= 0 ? null : () => onAdd(product),
           style: FilledButton.styleFrom(
             padding: const EdgeInsets.all(10),
             shape: RoundedRectangleBorder(
@@ -5283,16 +4886,10 @@ class SettingsView extends StatelessWidget {
   Widget build(BuildContext context) {
     final store = StoreScope.of(context);
     final branch = store.activeBranch;
-    final branches = store.branches.isEmpty ? [branch] : store.branches;
-    final selectedType = _normalizedBranchType(branch.type);
+    final selectedType = branch.isRestaurant ? 'Restaurant' : 'Retail';
     return ResponsiveColumns(
       left: AppPanel(
         title: 'Branch settings',
-        action: FilledButton.icon(
-          onPressed: () => _openBranchDialog(context),
-          icon: const Icon(Icons.add_business_outlined),
-          label: const Text('New branch'),
-        ),
         horizontalScroll: false,
         child: SizedBox(
           width: 560,
@@ -5318,11 +4915,6 @@ class SettingsView extends StatelessWidget {
                     icon: Icon(Icons.restaurant_menu_outlined),
                     label: Text('Restaurant'),
                   ),
-                  ButtonSegment(
-                    value: 'Hotel',
-                    icon: Icon(Icons.room_service_outlined),
-                    label: Text('Hotel'),
-                  ),
                 ],
                 selected: {selectedType},
                 onSelectionChanged: (value) async {
@@ -5330,42 +4922,6 @@ class SettingsView extends StatelessWidget {
                   if (!context.mounted) return;
                   _showMessage(context, store.syncStatus);
                 },
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Branches',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 8),
-              DataTable(
-                columns: const [
-                  DataColumn(label: Text('Name')),
-                  DataColumn(label: Text('Code')),
-                  DataColumn(label: Text('Type')),
-                  DataColumn(label: Text('Use')),
-                ],
-                rows: [
-                  for (final item in branches)
-                    DataRow(
-                      selected: item.id == branch.id,
-                      cells: [
-                        DataCell(Text(item.name)),
-                        DataCell(Text(item.code)),
-                        DataCell(Text(item.type)),
-                        DataCell(
-                          IconButton(
-                            tooltip: 'Use branch',
-                            onPressed: item.id == branch.id
-                                ? null
-                                : () => store.selectBranch(item),
-                            icon: const Icon(Icons.check_circle_outline),
-                          ),
-                        ),
-                      ],
-                    ),
-                ],
               ),
             ],
           ),
@@ -5376,7 +4932,6 @@ class SettingsView extends StatelessWidget {
         rows: const [
           ['Retail', 'Normal scan/search POS', 'All items'],
           ['Restaurant', 'Tablet menu POS', 'Priority items'],
-          ['Hotel', 'Running orders stay open', 'Editable orders'],
           ['Windows desktop', 'Quick chips', 'Top 10 priority'],
         ],
       ),
@@ -6432,9 +5987,7 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
   final email = TextEditingController(text: user?.email ?? '');
   final password = TextEditingController(text: user?.password ?? '');
   String role = user?.role ?? 'Cashier';
-  String branchType = _normalizedBranchType(
-    user?.branchType ?? store.activeBranch.type,
-  );
+  String branchType = user?.branchType ?? store.activeBranch.type;
   bool active = user?.active ?? true;
   await _showFormDialog(
     context,
@@ -6465,7 +6018,7 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
               DropdownButtonFormField<String>(
                 initialValue: role,
                 decoration: const InputDecoration(labelText: 'Role'),
-                items: const ['Admin', 'Resturant', 'Manager', 'Cashier']
+                items: const ['Admin', 'Manager', 'Cashier']
                     .map(
                       (item) =>
                           DropdownMenuItem(value: item, child: Text(item)),
@@ -6475,9 +6028,11 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
                     setDialogState(() => role = value ?? role),
               ),
               DropdownButtonFormField<String>(
-                initialValue: _normalizedBranchType(branchType),
+                initialValue: branchType.toLowerCase().contains('restaurant')
+                    ? 'Restaurant'
+                    : 'Retail',
                 decoration: const InputDecoration(labelText: 'Branch type'),
-                items: const ['Retail', 'Restaurant', 'Hotel']
+                items: const ['Retail', 'Restaurant']
                     .map(
                       (item) =>
                           DropdownMenuItem(value: item, child: Text(item)),
@@ -6508,62 +6063,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
         branchType: branchType,
       ),
     ),
-  );
-}
-
-Future<void> _openBranchDialog(BuildContext context) async {
-  final store = StoreScope.of(context);
-  final name = TextEditingController();
-  final code = TextEditingController();
-  final address = TextEditingController();
-  String branchType = _normalizedBranchType(store.activeBranch.type);
-  await _showFormDialog(
-    context,
-    title: 'New branch',
-    fields: [
-      TextField(
-        controller: name,
-        decoration: const InputDecoration(labelText: 'Branch name'),
-      ),
-      TextField(
-        controller: code,
-        textCapitalization: TextCapitalization.characters,
-        decoration: const InputDecoration(labelText: 'Branch code'),
-      ),
-      StatefulBuilder(
-        builder: (context, setDialogState) {
-          return DropdownButtonFormField<String>(
-            initialValue: branchType,
-            decoration: const InputDecoration(labelText: 'Branch type'),
-            items: const ['Retail', 'Restaurant', 'Hotel']
-                .map((item) => DropdownMenuItem(value: item, child: Text(item)))
-                .toList(),
-            onChanged: (value) =>
-                setDialogState(() => branchType = value ?? branchType),
-          );
-        },
-      ),
-      TextField(
-        controller: address,
-        decoration: const InputDecoration(labelText: 'Address'),
-      ),
-    ],
-    onSave: () {
-      final branchName = name.text.trim();
-      final branchCode = code.text.trim();
-      if (branchName.length < 2 || branchCode.length < 2) {
-        _showMessage(context, 'Branch name and code are required');
-        return;
-      }
-      unawaited(
-        store.createBranch(
-          name: branchName,
-          code: branchCode,
-          branchType: branchType,
-          address: address.text,
-        ),
-      );
-    },
   );
 }
 

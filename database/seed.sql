@@ -7,7 +7,7 @@ VALUES ('InvPro Demo Company', 'PKR');
 DECLARE @TenantId INT = SCOPE_IDENTITY();
 
 INSERT INTO dbo.BranchTypes (TenantId, Name, Code)
-VALUES (@TenantId, 'Retail', 'RETAIL'), (@TenantId, 'Restaurant', 'RESTAURANT');
+VALUES (@TenantId, 'Retail', 'RETAIL'), (@TenantId, 'Restaurant', 'RESTAURANT'), (@TenantId, 'Hotel', 'HOTEL');
 
 DECLARE @RetailBranchTypeId INT = (SELECT TOP 1 BranchTypeId FROM dbo.BranchTypes WHERE TenantId = @TenantId AND Code = 'RETAIL');
 
@@ -59,9 +59,9 @@ VALUES (@TenantId, 'Walk-in Customer', NULL, NULL, 0, 0), (@TenantId, 'Metro Who
 INSERT INTO dbo.Suppliers (TenantId, Name, Phone, Email, TaxNumber)
 VALUES (@TenantId, 'Global Electronics Supply', '+92-321-0000000', 'supply@example.com', 'NTN-123456');
 
-INSERT INTO dbo.Users (TenantId, BranchId, RoleId, FullName, Email, PasswordHash)
-SELECT @TenantId, @BranchId, RoleId, 'System Admin', 'admin@invpro.local', '$2b$12$Y7h33FUBvSVV70oz3g7B8.lJ5VZ0KDNppkB5c49RjIHLoY5NVxx6G' FROM dbo.Roles WHERE TenantId = @TenantId AND Name = 'Admin'
+INSERT INTO dbo.Users (TenantId, BranchId, BranchTypeId, RoleId, FullName, Email, PasswordHash)
+SELECT @TenantId, @BranchId, @RetailBranchTypeId, RoleId, 'System Admin', 'admin@invpro.local', '$2b$12$Y7h33FUBvSVV70oz3g7B8.lJ5VZ0KDNppkB5c49RjIHLoY5NVxx6G' FROM dbo.Roles WHERE TenantId = @TenantId AND Name = 'Admin'
 UNION ALL
-SELECT @TenantId, @BranchId, RoleId, 'Store Manager', 'manager@invpro.local', '$2b$12$qrcMqeBI3Z68plafu58ikeZ/e1WPsVxIYrbVZ4Sz38OezvYkEBoa2' FROM dbo.Roles WHERE TenantId = @TenantId AND Name = 'Manager'
+SELECT @TenantId, @BranchId, @RetailBranchTypeId, RoleId, 'Store Manager', 'manager@invpro.local', '$2b$12$qrcMqeBI3Z68plafu58ikeZ/e1WPsVxIYrbVZ4Sz38OezvYkEBoa2' FROM dbo.Roles WHERE TenantId = @TenantId AND Name = 'Manager'
 UNION ALL
-SELECT @TenantId, @BranchId, RoleId, 'Counter Cashier', 'cashier@invpro.local', '$2b$12$le.EwabQYkz0u.C.GrhelOxRas8GgnAfhvkyE6vmz1nupchtKhs5O' FROM dbo.Roles WHERE TenantId = @TenantId AND Name = 'Cashier';
+SELECT @TenantId, @BranchId, @RetailBranchTypeId, RoleId, 'Counter Cashier', 'cashier@invpro.local', '$2b$12$le.EwabQYkz0u.C.GrhelOxRas8GgnAfhvkyE6vmz1nupchtKhs5O' FROM dbo.Roles WHERE TenantId = @TenantId AND Name = 'Cashier';

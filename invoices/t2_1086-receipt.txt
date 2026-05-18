@@ -1,0 +1,25 @@
+         POS-INV-MSSQL          
+--------------------------------
+Invoice                  T2-1086
+Date            2026-05-18 17:04
+Order                    Table 2
+Customer        Walk-in Customer
+Payment                     Cash
+--------------------------------
+Table
+1 x PKR 3,500          PKR 3,500
+Bluetooth Headset Pro
+1 x PKR 7,500          PKR 7,500
+Oven
+1 x PKR 25,000        PKR 25,000
+Refrigerator
+1 x PKR 88,000        PKR 88,000
+--------------------------------
+Paid                 PKR 124,000
+Due                        PKR 0
+--------------------------------
+GRAND TOTAL          PKR 124,000
+--------------------------------
+Thank you
+
+

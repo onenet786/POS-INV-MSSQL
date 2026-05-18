@@ -2680,9 +2680,9 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                           ActionChip(
                             visualDensity: VisualDensity.compact,
-                            label: const Text('onenet'),
+                            label: const Text('Admin'),
                             onPressed: () =>
-                                _fill('onenet@invpro.local', 'Admin786'),
+                                _fill('admin@invpro.local', 'Admin@12345'),
                           ),
                           ActionChip(
                             visualDensity: VisualDensity.compact,

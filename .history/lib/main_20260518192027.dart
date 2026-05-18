@@ -2680,12 +2680,6 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                           ActionChip(
                             visualDensity: VisualDensity.compact,
-                            label: const Text('onenet'),
-                            onPressed: () =>
-                                _fill('onenet@invpro.local', 'Admin786'),
-                          ),
-                          ActionChip(
-                            visualDensity: VisualDensity.compact,
                             label: const Text('Cashier'),
                             onPressed: () =>
                                 _fill('cashier@invpro.local', 'Cashier@12345'),
@@ -6465,7 +6459,7 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
               DropdownButtonFormField<String>(
                 initialValue: role,
                 decoration: const InputDecoration(labelText: 'Role'),
-                items: const ['Admin', 'Resturant', 'Manager', 'Cashier']
+                items: const ['Admin', 'Manager', 'Cashier']
                     .map(
                       (item) =>
                           DropdownMenuItem(value: item, child: Text(item)),

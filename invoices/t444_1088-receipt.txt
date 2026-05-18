@@ -1,0 +1,25 @@
+         POS-INV-MSSQL          
+--------------------------------
+Invoice                T444-1088
+Date            2026-05-18 17:12
+Order                  Table 444
+Customer        Walk-in Customer
+Payment                     Cash
+--------------------------------
+Refrigerator
+1 x PKR 88,000        PKR 88,000
+Oven
+1 x PKR 25,000        PKR 25,000
+Bluetooth Headset Pro
+1 x PKR 7,500          PKR 7,500
+pencil
+1 x PKR 50                PKR 50
+--------------------------------
+Paid                 PKR 120,550
+Due                        PKR 0
+--------------------------------
+GRAND TOTAL          PKR 120,550
+--------------------------------
+Thank you
+
+

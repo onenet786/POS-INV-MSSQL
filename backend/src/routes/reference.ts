@@ -106,15 +106,41 @@ referenceRouter.post('/units', requireAuth, requirePermission('settings.manage')
 // Branches CRUD
 referenceRouter.post('/branches', requireAuth, requirePermission('settings.manage'), async (req, res, next) => {
   try {
-    const body = z.object({ name: z.string().min(2), code: z.string().min(2), branchTypeId: z.number().optional(), address: z.string().optional() }).parse(req.body);
+    const body = z.object({
+      name: z.string().min(2),
+      code: z.string().min(2),
+      branchTypeId: z.number().optional(),
+      branchTypeCode: z.enum(['RETAIL', 'RESTAURANT', 'HOTEL']).optional(),
+      address: z.string().optional(),
+    }).parse(req.body);
     const pool = await getPool();
     const result = await pool.request()
       .input('TenantId', sql.Int, req.user!.tenantId)
       .input('Name', sql.NVarChar(160), body.name)
       .input('Code', sql.NVarChar(32), body.code)
       .input('BranchTypeId', sql.Int, body.branchTypeId ?? null)
+      .input('BranchTypeCode', sql.NVarChar(32), body.branchTypeCode ?? null)
       .input('Address', sql.NVarChar(500), body.address ?? null)
-      .query('INSERT INTO dbo.Branches (TenantId, BranchTypeId, Name, Code, Address) OUTPUT INSERTED.* VALUES (@TenantId, @BranchTypeId, @Name, @Code, @Address)');
+      .query(`
+        DECLARE @ResolvedBranchTypeId INT = COALESCE(
+          @BranchTypeId,
+          (
+            SELECT TOP 1 BranchTypeId
+            FROM dbo.BranchTypes
+            WHERE TenantId = @TenantId AND Code = @BranchTypeCode
+          )
+        );
+
+        INSERT INTO dbo.Branches (TenantId, BranchTypeId, Name, Code, Address)
+        VALUES (@TenantId, @ResolvedBranchTypeId, @Name, @Code, @Address);
+
+        DECLARE @BranchId INT = SCOPE_IDENTITY();
+
+        SELECT b.BranchId, b.Name, b.Code, b.BranchTypeId, bt.Name BranchTypeName
+        FROM dbo.Branches b
+        LEFT JOIN dbo.BranchTypes bt ON bt.BranchTypeId = b.BranchTypeId
+        WHERE b.TenantId = @TenantId AND b.BranchId = @BranchId;
+      `);
     await audit(req, 'branches.create', 'Branches', String(result.recordset[0].BranchId), body);
     res.status(201).json(result.recordset[0]);
   } catch (error) {
@@ -124,7 +150,7 @@ referenceRouter.post('/branches', requireAuth, requirePermission('settings.manag
 
 referenceRouter.put('/branches/:id/type', requireAuth, requirePermission('settings.manage'), async (req, res, next) => {
   try {
-    const body = z.object({ branchTypeCode: z.enum(['RETAIL', 'RESTAURANT']) }).parse(req.body);
+    const body = z.object({ branchTypeCode: z.enum(['RETAIL', 'RESTAURANT', 'HOTEL']) }).parse(req.body);
     const pool = await getPool();
     const result = await pool.request()
       .input('TenantId', sql.Int, req.user!.tenantId)

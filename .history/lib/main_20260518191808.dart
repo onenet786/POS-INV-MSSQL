@@ -214,22 +214,10 @@ class ApiClient {
     final uri = Uri.parse('$baseUrl$path');
     final payload = body == null ? null : jsonEncode(body);
     final response = switch (method) {
-      'GET' =>
-        await _client
-            .get(uri, headers: headers)
-            .timeout(const Duration(seconds: 8)),
-      'POST' =>
-        await _client
-            .post(uri, headers: headers, body: payload)
-            .timeout(const Duration(seconds: 8)),
-      'PUT' =>
-        await _client
-            .put(uri, headers: headers, body: payload)
-            .timeout(const Duration(seconds: 8)),
-      'DELETE' =>
-        await _client
-            .delete(uri, headers: headers)
-            .timeout(const Duration(seconds: 8)),
+      'GET' => await _client.get(uri, headers: headers).timeout(const Duration(seconds: 8)),
+      'POST' => await _client.post(uri, headers: headers, body: payload).timeout(const Duration(seconds: 8)),
+      'PUT' => await _client.put(uri, headers: headers, body: payload).timeout(const Duration(seconds: 8)),
+      'DELETE' => await _client.delete(uri, headers: headers).timeout(const Duration(seconds: 8)),
       _ => throw UnsupportedError('Unsupported API method $method'),
     };
     final text = response.body;
@@ -346,9 +334,9 @@ class AppStore extends ChangeNotifier {
         ),
         AppUser(
           id: 2,
-          name: 'OneNet Solutions',
-          email: 'onenet@invpro.local',
-          role: 'Cashier',
+          name: 'System Admin',
+          email: 'admin@invpro.local',
+          role: 'Admin',
           active: true,
         ),
         AppUser(
@@ -813,12 +801,10 @@ class AppStore extends ChangeNotifier {
         'branchTypeCode': _branchTypeCode(normalizedType),
         'address': address.trim(),
       });
-      final savedBranch = BranchProfile.fromApi(
-        row,
-      ).copyWith(type: _string(row, 'BranchTypeName', normalizedType));
-      final index = branches.indexWhere(
-        (branch) => branch.id == localBranch.id,
+      final savedBranch = BranchProfile.fromApi(row).copyWith(
+        type: _string(row, 'BranchTypeName', normalizedType),
       );
+      final index = branches.indexWhere((branch) => branch.id == localBranch.id);
       if (index == -1) {
         branches.add(savedBranch);
       } else {
@@ -2035,7 +2021,6 @@ class AppUser {
       ? password
       : switch (role) {
           'Admin' => 'Admin@12345',
-          'onenet' => 'Admin786',
           'Manager' => 'Manager@12345',
           _ => 'Cashier@12345',
         };
@@ -2680,12 +2665,6 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                           ActionChip(
                             visualDensity: VisualDensity.compact,
-                            label: const Text('onenet'),
-                            onPressed: () =>
-                                _fill('onenet@invpro.local', 'Admin786'),
-                          ),
-                          ActionChip(
-                            visualDensity: VisualDensity.compact,
                             label: const Text('Cashier'),
                             onPressed: () =>
                                 _fill('cashier@invpro.local', 'Cashier@12345'),
@@ -3201,16 +3180,11 @@ class _PosViewState extends State<PosView> {
                 tablet ||
                 (runsAndroid && landscape && constraints.maxWidth >= 560);
             final scopedUser = _currentUser(context);
-            final currentUser =
-                store.users.where((user) {
-                  return user.id == scopedUser.id ||
-                      user.email.toLowerCase() ==
-                          scopedUser.email.toLowerCase();
-                }).firstOrNull ??
-                scopedUser;
-            final userBranchType = _normalizedBranchType(
-              currentUser.branchType,
-            );
+            final currentUser = store.users.where((user) {
+              return user.id == scopedUser.id ||
+                  user.email.toLowerCase() == scopedUser.email.toLowerCase();
+            }).firstOrNull ?? scopedUser;
+            final userBranchType = _normalizedBranchType(currentUser.branchType);
             final activeBranchAppliesToUser =
                 currentUser.branchId == null ||
                 currentUser.branchId == store.activeBranch.id;
@@ -3255,45 +3229,46 @@ class _PosViewState extends State<PosView> {
                     onPressed: cart.isEmpty ? null : _clearCart,
                     icon: const Icon(Icons.delete_sweep_outlined),
                   ),
-                  child: Column(
-                    children: [
-                      if (restaurantMenuMode) ...[
-                        _RestaurantOrderHeader(
-                          order: activeRestaurantOrder,
-                          type: restaurantOrderType,
-                          reference: restaurantOrderRef,
-                          previewOrderNo: _restaurantOrderNumber(
-                            restaurantOrderType,
-                            restaurantOrderRef.text,
-                            nextRestaurantOrderSequence,
-                          ),
-                          onTypeChanged: (value) {
-                            setState(() {
-                              restaurantOrderType = value;
-                              restaurantOrderRef.clear();
-                              activeRestaurantOrder = null;
-                            });
-                          },
-                          onReferenceChanged:
-                              _resetActiveRestaurantOrderForInput,
-                          onStart: () =>
-                              _startRestaurantOrder(hotelMode: hotelMode),
-                          onClear: activeRestaurantOrder == null
-                              ? null
-                              : _clearRestaurantOrder,
-                        ),
-                        const SizedBox(height: 12),
-                        if (hotelMode) ...[
-                          _HotelRunningOrdersBar(
-                            orders: hotelRunningOrders,
-                            activeOrderNo: activeRestaurantOrder?.orderNo,
-                            money: money,
-                            onSelect: _selectHotelRunningOrder,
+                    child: Column(
+                      children: [
+                        if (restaurantMenuMode) ...[
+                          _RestaurantOrderHeader(
+                            order: activeRestaurantOrder,
+                            type: restaurantOrderType,
+                            reference: restaurantOrderRef,
+                            previewOrderNo: _restaurantOrderNumber(
+                              restaurantOrderType,
+                              restaurantOrderRef.text,
+                              nextRestaurantOrderSequence,
+                            ),
+                            onTypeChanged: (value) {
+                              setState(() {
+                                restaurantOrderType = value;
+                                restaurantOrderRef.clear();
+                                activeRestaurantOrder = null;
+                              });
+                            },
+                            onReferenceChanged:
+                                _resetActiveRestaurantOrderForInput,
+                            onStart: () => _startRestaurantOrder(
+                              hotelMode: hotelMode,
+                            ),
+                            onClear: activeRestaurantOrder == null
+                                ? null
+                                : _clearRestaurantOrder,
                           ),
                           const SizedBox(height: 12),
+                          if (hotelMode) ...[
+                            _HotelRunningOrdersBar(
+                              orders: hotelRunningOrders,
+                              activeOrderNo: activeRestaurantOrder?.orderNo,
+                              money: money,
+                              onSelect: _selectHotelRunningOrder,
+                            ),
+                            const SizedBox(height: 12),
+                          ],
                         ],
-                      ],
-                      if (!restaurantMenuMode) ...[
+                        if (!restaurantMenuMode) ...[
                         TextField(
                           controller: search,
                           focusNode: searchFocus,
@@ -3326,16 +3301,16 @@ class _PosViewState extends State<PosView> {
                         ),
                         const SizedBox(height: 12),
                       ],
-                      if (restaurantMenuMode)
-                        Expanded(
-                          child: _RestaurantMenuGrid(
-                            products: quickProducts,
-                            money: money,
-                            onAdd: activeRestaurantOrder == null
-                                ? null
-                                : _addProduct,
-                          ),
-                        )
+                        if (restaurantMenuMode)
+                          Expanded(
+                            child: _RestaurantMenuGrid(
+                              products: quickProducts,
+                              money: money,
+                              onAdd: activeRestaurantOrder == null
+                                  ? null
+                                  : _addProduct,
+                            ),
+                          )
                       else
                         Wrap(
                           spacing: 8,
@@ -5334,9 +5309,9 @@ class SettingsView extends StatelessWidget {
               const SizedBox(height: 16),
               Text(
                 'Branches',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
               ),
               const SizedBox(height: 8),
               DataTable(
@@ -6432,9 +6407,7 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
   final email = TextEditingController(text: user?.email ?? '');
   final password = TextEditingController(text: user?.password ?? '');
   String role = user?.role ?? 'Cashier';
-  String branchType = _normalizedBranchType(
-    user?.branchType ?? store.activeBranch.type,
-  );
+  String branchType = _normalizedBranchType(user?.branchType ?? store.activeBranch.type);
   bool active = user?.active ?? true;
   await _showFormDialog(
     context,
@@ -6465,7 +6438,7 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
               DropdownButtonFormField<String>(
                 initialValue: role,
                 decoration: const InputDecoration(labelText: 'Role'),
-                items: const ['Admin', 'Resturant', 'Manager', 'Cashier']
+                items: const ['Admin', 'Manager', 'Cashier']
                     .map(
                       (item) =>
                           DropdownMenuItem(value: item, child: Text(item)),

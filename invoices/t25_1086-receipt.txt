@@ -1,0 +1,23 @@
+         POS-INV-MSSQL          
+--------------------------------
+Invoice                 T25-1086
+Date            2026-05-18 16:59
+Order                   Table 25
+Customer        Walk-in Customer
+Payment                     Cash
+--------------------------------
+pencil
+1 x PKR 50                PKR 50
+Thermal Receipt Roll
+1 x PKR 360              PKR 360
+Samsung USB-C Charger 25W
+1 x PKR 2,800          PKR 2,800
+--------------------------------
+Paid                   PKR 3,210
+Due                        PKR 0
+--------------------------------
+GRAND TOTAL            PKR 3,210
+--------------------------------
+Thank you
+
+

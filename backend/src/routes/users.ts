@@ -14,11 +14,12 @@ usersRouter.get('/', requireAuth, requirePermission('users.read'), async (req, r
       .input('TenantId', sql.Int, req.user!.tenantId)
       .query(`
         SELECT u.UserId, u.FullName, u.Email, u.BranchId, u.IsActive, u.LastLoginAt,
-          r.Name RoleName, b.Name BranchName, bt.Name BranchTypeName
+          r.Name RoleName, b.Name BranchName, COALESCE(ubt.Name, bt.Name) BranchTypeName
         FROM dbo.Users u
         INNER JOIN dbo.Roles r ON r.RoleId = u.RoleId
         LEFT JOIN dbo.Branches b ON b.BranchId = u.BranchId
         LEFT JOIN dbo.BranchTypes bt ON bt.BranchTypeId = b.BranchTypeId
+        LEFT JOIN dbo.BranchTypes ubt ON ubt.BranchTypeId = u.BranchTypeId
         WHERE u.TenantId = @TenantId
         ORDER BY u.FullName
       `);
@@ -36,24 +37,32 @@ usersRouter.post('/', requireAuth, requirePermission('users.create'), async (req
       password: z.string().min(6),
       roleId: z.number(),
       branchId: z.number().nullable().optional(),
+      branchTypeCode: z.enum(['RETAIL', 'RESTAURANT', 'HOTEL']).optional(),
     }).parse(req.body);
 
-    const hash = await bcrypt.hash(body.password, 12);
     const pool = await getPool();
+    const hash = await bcrypt.hash(body.password, 12);
     const result = await pool.request()
       .input('TenantId', sql.Int, req.user!.tenantId)
       .input('BranchId', sql.Int, body.branchId ?? null)
+      .input('BranchTypeCode', sql.NVarChar(32), body.branchTypeCode ?? null)
       .input('RoleId', sql.Int, body.roleId)
       .input('FullName', sql.NVarChar(160), body.fullName)
       .input('Email', sql.NVarChar(180), body.email)
       .input('PasswordHash', sql.NVarChar(255), hash)
       .query(`
-        INSERT INTO dbo.Users (TenantId, BranchId, RoleId, FullName, Email, PasswordHash)
+        DECLARE @BranchTypeId INT = (
+          SELECT TOP 1 BranchTypeId
+          FROM dbo.BranchTypes
+          WHERE TenantId = @TenantId AND Code = @BranchTypeCode
+        );
+
+        INSERT INTO dbo.Users (TenantId, BranchId, BranchTypeId, RoleId, FullName, Email, PasswordHash)
         OUTPUT INSERTED.UserId, INSERTED.FullName, INSERTED.Email
-        VALUES (@TenantId, @BranchId, @RoleId, @FullName, @Email, @PasswordHash)
+        VALUES (@TenantId, @BranchId, @BranchTypeId, @RoleId, @FullName, @Email, @PasswordHash)
       `);
     await audit(req, 'users.create', 'Users', String(result.recordset[0].UserId), { email: body.email, fullName: body.fullName });
-    res.json(result.recordset);
+    res.json(result.recordset[0]);
   } catch (error) {
     next(error);
   }
@@ -97,22 +106,37 @@ usersRouter.put('/:id', requireAuth, requirePermission('users.update'), async (r
       fullName: z.string().min(2).optional(),
       roleId: z.number().optional(),
       branchId: z.number().nullable().optional(),
+      branchTypeCode: z.enum(['RETAIL', 'RESTAURANT', 'HOTEL']).optional(),
       isActive: z.boolean().optional(),
     }).parse(req.body);
 
     const pool = await getPool();
+    const existing = await pool.request()
+      .input('TenantId', sql.Int, req.user!.tenantId)
+      .input('UserId', sql.Int, req.params.id)
+      .query('SELECT BranchId FROM dbo.Users WHERE TenantId = @TenantId AND UserId = @UserId');
+    if (!existing.recordset[0]) return res.status(404).json({ message: 'User not found' });
+    const targetBranchId = body.branchId === undefined ? existing.recordset[0].BranchId : body.branchId;
     const result = await pool.request()
       .input('TenantId', sql.Int, req.user!.tenantId)
       .input('UserId', sql.Int, req.params.id)
       .input('FullName', sql.NVarChar(160), body.fullName ?? null)
       .input('RoleId', sql.Int, body.roleId ?? null)
-      .input('BranchId', sql.Int, body.branchId === undefined ? undefined : body.branchId)
+      .input('BranchId', sql.Int, targetBranchId ?? null)
+      .input('BranchTypeCode', sql.NVarChar(32), body.branchTypeCode ?? null)
       .input('IsActive', sql.Bit, body.isActive ?? null)
       .query(`
+        DECLARE @BranchTypeId INT = (
+          SELECT TOP 1 BranchTypeId
+          FROM dbo.BranchTypes
+          WHERE TenantId = @TenantId AND Code = @BranchTypeCode
+        );
+
         UPDATE dbo.Users
         SET FullName = ISNULL(@FullName, FullName),
             RoleId = ISNULL(@RoleId, RoleId),
-            BranchId = CASE WHEN @BranchId IS NULL AND @BranchId IS NOT NULL THEN BranchId ELSE @BranchId END,
+            BranchId = @BranchId,
+            BranchTypeId = ISNULL(@BranchTypeId, BranchTypeId),
             IsActive = ISNULL(@IsActive, IsActive)
         OUTPUT INSERTED.UserId, INSERTED.FullName, INSERTED.Email, INSERTED.IsActive
         WHERE TenantId = @TenantId AND UserId = @UserId

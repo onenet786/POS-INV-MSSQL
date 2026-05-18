@@ -18,11 +18,12 @@ authRouter.post('/login', async (req, res, next) => {
       .input('Email', sql.NVarChar(180), body.email)
       .query(`
         SELECT TOP 1 u.UserId, u.TenantId, u.BranchId, u.FullName, u.Email, u.PasswordHash, r.Name RoleName, r.Permissions,
-          b.Name BranchName, b.Code BranchCode, bt.Name BranchTypeName
+          b.Name BranchName, b.Code BranchCode, COALESCE(ubt.Name, bt.Name) BranchTypeName
         FROM dbo.Users u
         INNER JOIN dbo.Roles r ON r.RoleId = u.RoleId
         LEFT JOIN dbo.Branches b ON b.BranchId = u.BranchId
         LEFT JOIN dbo.BranchTypes bt ON bt.BranchTypeId = b.BranchTypeId
+        LEFT JOIN dbo.BranchTypes ubt ON ubt.BranchTypeId = u.BranchTypeId
         WHERE u.Email = @Email AND u.IsActive = 1
       `);
 
