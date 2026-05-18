@@ -13,10 +13,12 @@ usersRouter.get('/', requireAuth, requirePermission('users.read'), async (req, r
     const result = await pool.request()
       .input('TenantId', sql.Int, req.user!.tenantId)
       .query(`
-        SELECT u.UserId, u.FullName, u.Email, u.IsActive, u.LastLoginAt, r.Name RoleName, b.Name BranchName
+        SELECT u.UserId, u.FullName, u.Email, u.BranchId, u.IsActive, u.LastLoginAt,
+          r.Name RoleName, b.Name BranchName, bt.Name BranchTypeName
         FROM dbo.Users u
         INNER JOIN dbo.Roles r ON r.RoleId = u.RoleId
         LEFT JOIN dbo.Branches b ON b.BranchId = u.BranchId
+        LEFT JOIN dbo.BranchTypes bt ON bt.BranchTypeId = b.BranchTypeId
         WHERE u.TenantId = @TenantId
         ORDER BY u.FullName
       `);

@@ -711,12 +711,6 @@ class AppStore extends ChangeNotifier {
         ? 'Restaurant'
         : 'Retail';
     activeBranch = activeBranch.copyWith(type: normalizedType);
-    for (var index = 0; index < users.length; index++) {
-      final user = users[index];
-      if (user.branchId == activeBranch.id) {
-        users[index] = user.copyWith(branchType: normalizedType);
-      }
-    }
     _saveToDisk();
     notifyListeners();
     if (!sqlConnected) {
@@ -1209,7 +1203,7 @@ class AppStore extends ChangeNotifier {
           'email': user.email,
           'password': user.defaultPassword,
           'roleId': roleId,
-          'branchId': user.branchId,
+          'branchId': null,
         });
         final created = row['0'] is Map
             ? Map<String, dynamic>.from(row['0'] as Map)
@@ -1219,7 +1213,6 @@ class AppStore extends ChangeNotifier {
         await api.put('/users/${user.id}', {
           'fullName': user.name,
           'roleId': roleId,
-          'branchId': user.branchId,
           'isActive': user.active,
         });
         if (user.password.isNotEmpty) {
@@ -2987,20 +2980,10 @@ class _PosViewState extends State<PosView> {
             final restaurantTerminalSize =
                 tablet ||
                 (runsAndroid && landscape && constraints.maxWidth >= 560);
-            final currentUser = _currentUser(context);
-            final userBranchIsRestaurant = currentUser.branchType
-                .toLowerCase()
-                .contains('restaurant');
-            final activeBranchAppliesToUser =
-                currentUser.branchId == null ||
-                currentUser.branchId == store.activeBranch.id;
-            final effectiveRestaurantBranch =
-                userBranchIsRestaurant ||
-                (activeBranchAppliesToUser && store.activeBranch.isRestaurant);
             final restaurantMenuMode =
                 (kIsWeb || runsAndroid || runsWindows) &&
                 restaurantTerminalSize &&
-                effectiveRestaurantBranch;
+                store.activeBranch.isRestaurant;
             final quickProducts = _posProducts(
               store,
               windowsDesktopOnly: runsWindows && wide,
@@ -4626,7 +4609,6 @@ class UsersView extends StatelessWidget {
           DataColumn(label: Text('Name')),
           DataColumn(label: Text('Email')),
           DataColumn(label: Text('Role')),
-          DataColumn(label: Text('Branch type')),
           DataColumn(label: Text('Status')),
           DataColumn(label: Text('Actions')),
         ],
@@ -4637,7 +4619,6 @@ class UsersView extends StatelessWidget {
                 DataCell(Text(user.name)),
                 DataCell(Text(user.email)),
                 DataCell(Text(user.role)),
-                DataCell(Text(user.branchType)),
                 DataCell(
                   StatusPill(label: user.active ? 'Active' : 'Disabled'),
                 ),
@@ -5771,7 +5752,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
   final email = TextEditingController(text: user?.email ?? '');
   final password = TextEditingController(text: user?.password ?? '');
   String role = user?.role ?? 'Cashier';
-  String branchType = user?.branchType ?? store.activeBranch.type;
   bool active = user?.active ?? true;
   await _showFormDialog(
     context,
@@ -5811,20 +5791,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
                 onChanged: (value) =>
                     setDialogState(() => role = value ?? role),
               ),
-              DropdownButtonFormField<String>(
-                initialValue: branchType.toLowerCase().contains('restaurant')
-                    ? 'Restaurant'
-                    : 'Retail',
-                decoration: const InputDecoration(labelText: 'Branch type'),
-                items: const ['Retail', 'Restaurant']
-                    .map(
-                      (item) =>
-                          DropdownMenuItem(value: item, child: Text(item)),
-                    )
-                    .toList(),
-                onChanged: (value) =>
-                    setDialogState(() => branchType = value ?? branchType),
-              ),
               SwitchListTile(
                 value: active,
                 onChanged: (value) => setDialogState(() => active = value),
@@ -5843,8 +5809,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
         role: role,
         active: active,
         password: password.text.trim(),
-        branchId: user?.branchId ?? store.activeBranch.id,
-        branchType: branchType,
       ),
     ),
   );

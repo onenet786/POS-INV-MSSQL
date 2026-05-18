@@ -711,12 +711,6 @@ class AppStore extends ChangeNotifier {
         ? 'Restaurant'
         : 'Retail';
     activeBranch = activeBranch.copyWith(type: normalizedType);
-    for (var index = 0; index < users.length; index++) {
-      final user = users[index];
-      if (user.branchId == activeBranch.id) {
-        users[index] = user.copyWith(branchType: normalizedType);
-      }
-    }
     _saveToDisk();
     notifyListeners();
     if (!sqlConnected) {
@@ -1209,7 +1203,7 @@ class AppStore extends ChangeNotifier {
           'email': user.email,
           'password': user.defaultPassword,
           'roleId': roleId,
-          'branchId': user.branchId,
+          'branchId': null,
         });
         final created = row['0'] is Map
             ? Map<String, dynamic>.from(row['0'] as Map)
@@ -1219,7 +1213,6 @@ class AppStore extends ChangeNotifier {
         await api.put('/users/${user.id}', {
           'fullName': user.name,
           'roleId': roleId,
-          'branchId': user.branchId,
           'isActive': user.active,
         });
         if (user.password.isNotEmpty) {
@@ -2676,9 +2669,8 @@ class _ShellPageState extends State<ShellPage> {
                       if (modules[selected].title == 'POS')
                         IconButton(
                           tooltip: 'Receipt printer',
-                          onPressed: () => unawaited(
-                            _openReceiptPrinterDialog(context, store),
-                          ),
+                          onPressed: () =>
+                              unawaited(_openReceiptPrinterDialog(context, store)),
                           icon: const Icon(Icons.print_outlined),
                         ),
                       Padding(
@@ -2985,381 +2977,380 @@ class _PosViewState extends State<PosView> {
             final runsWindows = !kIsWeb && Platform.isWindows;
             final landscape = constraints.maxWidth > constraints.maxHeight;
             final restaurantTerminalSize =
-                tablet ||
-                (runsAndroid && landscape && constraints.maxWidth >= 560);
-            final currentUser = _currentUser(context);
-            final userBranchIsRestaurant = currentUser.branchType
-                .toLowerCase()
-                .contains('restaurant');
-            final activeBranchAppliesToUser =
-                currentUser.branchId == null ||
-                currentUser.branchId == store.activeBranch.id;
-            final effectiveRestaurantBranch =
-                userBranchIsRestaurant ||
-                (activeBranchAppliesToUser && store.activeBranch.isRestaurant);
+                tablet || (runsAndroid && landscape && constraints.maxWidth >= 560);
             final restaurantMenuMode =
                 (kIsWeb || runsAndroid || runsWindows) &&
                 restaurantTerminalSize &&
-                effectiveRestaurantBranch;
+                store.activeBranch.isRestaurant;
             final quickProducts = _posProducts(
               store,
               windowsDesktopOnly: runsWindows && wide,
               menuMode: restaurantMenuMode,
             );
             final twoPane = wide || restaurantMenuMode;
-            final panelHeight =
-                (MediaQuery.sizeOf(context).height -
-                        MediaQuery.paddingOf(context).vertical -
-                        kToolbarHeight -
-                        32)
-                    .clamp(680.0, 900.0);
+            final panelHeight = (MediaQuery.sizeOf(context).height -
+                    MediaQuery.paddingOf(context).vertical -
+                    kToolbarHeight -
+                    32)
+                .clamp(680.0, 900.0);
             final panels = <Widget>[
-              SizedBox(
-                width: twoPane
-                    ? (constraints.maxWidth - 16) * .62
-                    : constraints.maxWidth,
-                child: AppPanel(
-                  title: 'Sell items',
-                  horizontalScroll: false,
-                  fillBody: restaurantMenuMode,
-                  action: IconButton(
-                    tooltip: 'Clear bill',
-                    onPressed: cart.isEmpty ? null : _clearCart,
-                    icon: const Icon(Icons.delete_sweep_outlined),
-                  ),
-                  child: Column(
-                    children: [
-                      if (!restaurantMenuMode) ...[
-                        TextField(
-                          controller: search,
-                          focusNode: searchFocus,
-                          decoration: InputDecoration(
-                            prefixIcon: const Icon(
-                              Icons.qr_code_scanner_outlined,
-                            ),
-                            suffixIcon: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Pick item (F2)',
-                                  onPressed: () =>
-                                      unawaited(_openItemPicker(store)),
-                                  icon: const Icon(Icons.list_alt_outlined),
-                                ),
-                                IconButton(
-                                  tooltip: 'Add item (F3)',
-                                  onPressed: () => _addBySearch(store),
-                                  icon: const Icon(
-                                    Icons.add_shopping_cart_outlined,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            labelText: 'Scan barcode, SKU, or product name',
-                            border: const OutlineInputBorder(),
-                          ),
-                          onSubmitted: (_) => _addBySearch(store),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-                      if (restaurantMenuMode)
-                        Expanded(
-                          child: _RestaurantMenuGrid(
-                            products: quickProducts,
-                            money: money,
-                            onAdd: _addProduct,
-                          ),
-                        )
-                      else
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            for (final product in quickProducts)
-                              ActionChip(
-                                avatar: const Icon(Icons.add, size: 18),
-                                label: Text(product.name),
-                                onPressed: product.stock <= 0
-                                    ? null
-                                    : () => _addProduct(product),
+                SizedBox(
+                  width: twoPane
+                      ? (constraints.maxWidth - 16) * .62
+                      : constraints.maxWidth,
+                  child: AppPanel(
+                    title: 'Sell items',
+                    horizontalScroll: false,
+                    fillBody: restaurantMenuMode,
+                    action: IconButton(
+                      tooltip: 'Clear bill',
+                      onPressed: cart.isEmpty ? null : _clearCart,
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                    ),
+                    child: Column(
+                      children: [
+                        if (!restaurantMenuMode) ...[
+                          TextField(
+                            controller: search,
+                            focusNode: searchFocus,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(
+                                Icons.qr_code_scanner_outlined,
                               ),
-                          ],
-                        ),
-                      if (!restaurantMenuMode) ...[
-                        const SizedBox(height: 16),
-                        _CartTable(
-                          cart: cart,
-                          money: money,
-                          selectedLineIndex: selectedLineIndex,
-                          onSelectLine: (index) =>
-                              setState(() => selectedLineIndex = index),
-                          onChangeQuantity: _changeLineQuantity,
-                          onRemoveLine: _removeLine,
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: twoPane
-                    ? (constraints.maxWidth - 16) * .38
-                    : constraints.maxWidth,
-                child: AppPanel(
-                  title: 'Payment',
-                  horizontalScroll: false,
-                  fillBody: restaurantMenuMode,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (restaurantMenuMode) ...[
-                        Text(
-                          'Added items',
-                          style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 6),
-                        Expanded(
-                          child: _CartTable(
+                              suffixIcon: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Pick item (F2)',
+                                    onPressed: () =>
+                                        unawaited(_openItemPicker(store)),
+                                    icon: const Icon(Icons.list_alt_outlined),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Add item (F3)',
+                                    onPressed: () => _addBySearch(store),
+                                    icon: const Icon(
+                                      Icons.add_shopping_cart_outlined,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              labelText: 'Scan barcode, SKU, or product name',
+                              border: const OutlineInputBorder(),
+                            ),
+                            onSubmitted: (_) => _addBySearch(store),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        if (restaurantMenuMode)
+                          Expanded(
+                            child: _RestaurantMenuGrid(
+                              products: quickProducts,
+                              money: money,
+                              onAdd: _addProduct,
+                            ),
+                          )
+                        else
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final product in quickProducts)
+                                ActionChip(
+                                  avatar: const Icon(Icons.add, size: 18),
+                                  label: Text(product.name),
+                                  onPressed: product.stock <= 0
+                                      ? null
+                                      : () => _addProduct(product),
+                                ),
+                            ],
+                          ),
+                        if (!restaurantMenuMode) ...[
+                          const SizedBox(height: 16),
+                          _CartTable(
                             cart: cart,
                             money: money,
                             selectedLineIndex: selectedLineIndex,
-                            compact: true,
                             onSelectLine: (index) =>
                                 setState(() => selectedLineIndex = index),
                             onChangeQuantity: _changeLineQuantity,
                             onRemoveLine: _removeLine,
                           ),
-                        ),
-                        const SizedBox(height: 12),
-                        const Divider(height: 1),
-                        const SizedBox(height: 12),
-                      ] else ...[
-                        DropdownButtonFormField<String>(
-                          initialValue: customer,
-                          decoration: const InputDecoration(
-                            labelText: 'Customer',
-                            border: OutlineInputBorder(),
-                          ),
-                          items: [
-                            for (final party in store.customers)
-                              DropdownMenuItem(
-                                value: party.name,
-                                child: Text(party.name),
-                              ),
-                          ],
-                          onChanged: (value) =>
-                              setState(() => customer = value ?? customer),
-                        ),
-                        const SizedBox(height: 12),
+                        ],
                       ],
-                      if (restaurantMenuMode)
-                        _RestaurantPaymentControls(
-                          money: money,
-                          subtotal: subtotal,
-                          discount: discount,
-                          total: total,
-                          tendered: tendered,
-                          balanceOrChange: paymentMethod == 'Credit'
-                              ? balanceDue
-                              : changeDue,
-                          paymentMethod: paymentMethod,
-                          amountPaid: amountPaid,
-                          cartIsEmpty: cart.isEmpty,
-                          onDiscount: cart.isEmpty
-                              ? null
-                              : () => unawaited(_openDiscountDialog(subtotal)),
-                          onPaymentMethodChanged: (value) {
-                            setState(() {
-                              paymentMethod = value;
-                              if (paymentMethod == 'Credit') {
-                                amountPaid.clear();
-                              }
-                            });
-                          },
-                          onAmountChanged: () => setState(() {}),
-                          onPost: () => _postInvoice(store, total, tendered),
-                          onPrint: () => _postInvoice(
-                            store,
-                            total,
-                            tendered,
-                            printAfterPost: true,
-                          ),
-                        )
-                      else ...[
-                        TotalRow(
-                          label: 'Subtotal',
-                          value: money.format(subtotal),
-                        ),
-                        TotalRow(
-                          label: 'Discount (F4)',
-                          value: money.format(discount),
-                          action: IconButton(
-                            tooltip: 'Set discount (F4)',
-                            onPressed: cart.isEmpty
-                                ? null
-                                : () =>
-                                      unawaited(_openDiscountDialog(subtotal)),
-                            icon: const Icon(Icons.percent_outlined),
-                          ),
-                        ),
-                        const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
-                        const Divider(height: 28),
-                        TotalRow(
-                          label: 'Grand total',
-                          value: money.format(total),
-                          strong: true,
-                        ),
-                        const SizedBox(height: 16),
-                        SegmentedButton<String>(
-                          segments: const [
-                            ButtonSegment(
-                              value: 'Cash',
-                              icon: Icon(Icons.payments_outlined),
-                              label: Text('Cash'),
-                            ),
-                            ButtonSegment(
-                              value: 'Card',
-                              icon: Icon(Icons.credit_card),
-                              label: Text('Card'),
-                            ),
-                            ButtonSegment(
-                              value: 'Credit',
-                              icon: Icon(Icons.schedule_outlined),
-                              label: Text('Credit'),
-                            ),
-                          ],
-                          selected: {paymentMethod},
-                          onSelectionChanged: (value) {
-                            setState(() {
-                              paymentMethod = value.first;
-                              if (paymentMethod == 'Credit') {
-                                amountPaid.clear();
-                              }
-                            });
-                          },
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: amountPaid,
-                          enabled: paymentMethod != 'Credit',
-                          keyboardType: TextInputType.number,
-                          decoration: InputDecoration(
-                            prefixIcon: const Icon(Icons.payments_outlined),
-                            labelText: paymentMethod == 'Cash'
-                                ? 'Cash received from customer'
-                                : 'Amount paid by customer',
-                            hintText: total > 0
-                                ? total.toStringAsFixed(0)
-                                : '0',
-                            border: const OutlineInputBorder(),
-                          ),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                        const SizedBox(height: 8),
-                        TotalRow(
-                          label: 'Paid amount',
-                          value: money.format(tendered),
-                        ),
-                        TotalRow(
-                          label: paymentMethod == 'Credit'
-                              ? 'Balance due'
-                              : 'Return change',
-                          value: money.format(
-                            paymentMethod == 'Credit' ? balanceDue : changeDue,
-                          ),
-                          strong: changeDue > 0 || balanceDue > 0,
-                        ),
-                        const SizedBox(height: 16),
-                        FilledButton.icon(
-                          onPressed: cart.isEmpty
-                              ? null
-                              : () => _postInvoice(store, total, tendered),
-                          icon: const Icon(Icons.receipt_long_outlined),
-                          label: const Text('Post invoice (F8)'),
-                        ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          onPressed: cart.isEmpty
-                              ? null
-                              : () => _postInvoice(
-                                  store,
-                                  total,
-                                  tendered,
-                                  printAfterPost: true,
-                                ),
-                          icon: const Icon(Icons.print_outlined),
-                          label: const Text('Post & print (F9)'),
-                        ),
-                        const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: () =>
-                              _openReceiptPrinterDialog(context, store),
-                          icon: const Icon(Icons.settings_outlined),
-                          label: Text(
-                            store.receiptPrinterName.isEmpty
-                                ? 'Printer: Windows default'
-                                : 'Printer: ${store.receiptPrinterName}',
-                          ),
-                        ),
-                      ],
-                      if (!restaurantMenuMode) ...[
-                        const SizedBox(height: 12),
-                        const Divider(height: 1),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Recent invoices',
-                          style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 6),
-                        for (final invoice in store.invoices.take(5))
-                          ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.receipt_long_outlined),
-                            title: Text(invoice.number),
-                            subtitle: Text(
-                              '${invoice.customer}  |  ${money.format(invoice.total)}',
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Open PDF',
-                                  onPressed: () => unawaited(
-                                    _openInvoicePdf(store, invoice),
-                                  ),
-                                  icon: const Icon(
-                                    Icons.picture_as_pdf_outlined,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: 'Duplicate reprint',
-                                  onPressed: () => unawaited(
-                                    _reprintInvoice(store, invoice),
-                                  ),
-                                  icon: const Icon(Icons.print_outlined),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ],
+                    ),
                   ),
                 ),
-              ),
-            ];
+                SizedBox(
+                  width: twoPane
+                      ? (constraints.maxWidth - 16) * .38
+                      : constraints.maxWidth,
+                  child: AppPanel(
+                    title: 'Payment',
+                    horizontalScroll: false,
+                    fillBody: restaurantMenuMode,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (restaurantMenuMode) ...[
+                          Text(
+                            'Added items',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 6),
+                          Expanded(
+                            child: _CartTable(
+                              cart: cart,
+                              money: money,
+                              selectedLineIndex: selectedLineIndex,
+                              compact: true,
+                              onSelectLine: (index) =>
+                                  setState(() => selectedLineIndex = index),
+                              onChangeQuantity: _changeLineQuantity,
+                              onRemoveLine: _removeLine,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Divider(height: 1),
+                          const SizedBox(height: 12),
+                        ] else ...[
+                          DropdownButtonFormField<String>(
+                            initialValue: customer,
+                            decoration: const InputDecoration(
+                              labelText: 'Customer',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: [
+                              for (final party in store.customers)
+                                DropdownMenuItem(
+                                  value: party.name,
+                                  child: Text(party.name),
+                                ),
+                            ],
+                            onChanged: (value) =>
+                                setState(() => customer = value ?? customer),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        if (restaurantMenuMode)
+                          _RestaurantPaymentControls(
+                            money: money,
+                            subtotal: subtotal,
+                            discount: discount,
+                            total: total,
+                            tendered: tendered,
+                            balanceOrChange: paymentMethod == 'Credit'
+                                ? balanceDue
+                                : changeDue,
+                            paymentMethod: paymentMethod,
+                            amountPaid: amountPaid,
+                            cartIsEmpty: cart.isEmpty,
+                            onDiscount: cart.isEmpty
+                                ? null
+                                : () => unawaited(_openDiscountDialog(subtotal)),
+                            onPaymentMethodChanged: (value) {
+                              setState(() {
+                                paymentMethod = value;
+                                if (paymentMethod == 'Credit') {
+                                  amountPaid.clear();
+                                }
+                              });
+                            },
+                            onAmountChanged: () => setState(() {}),
+                            onPost: () => _postInvoice(store, total, tendered),
+                            onPrint: () => _postInvoice(
+                              store,
+                              total,
+                              tendered,
+                              printAfterPost: true,
+                            ),
+                          )
+                        else ...[
+                          TotalRow(
+                            label: 'Subtotal',
+                            value: money.format(subtotal),
+                          ),
+                          TotalRow(
+                            label: 'Discount (F4)',
+                            value: money.format(discount),
+                            action: IconButton(
+                              tooltip: 'Set discount (F4)',
+                              onPressed: cart.isEmpty
+                                  ? null
+                                  : () => unawaited(
+                                      _openDiscountDialog(subtotal),
+                                    ),
+                              icon: const Icon(Icons.percent_outlined),
+                            ),
+                          ),
+                          const TotalRow(label: 'VAT/GST', value: 'PKR 0'),
+                          const Divider(height: 28),
+                          TotalRow(
+                            label: 'Grand total',
+                            value: money.format(total),
+                            strong: true,
+                          ),
+                          const SizedBox(height: 16),
+                          SegmentedButton<String>(
+                            segments: const [
+                              ButtonSegment(
+                                value: 'Cash',
+                                icon: Icon(Icons.payments_outlined),
+                                label: Text('Cash'),
+                              ),
+                              ButtonSegment(
+                                value: 'Card',
+                                icon: Icon(Icons.credit_card),
+                                label: Text('Card'),
+                              ),
+                              ButtonSegment(
+                                value: 'Credit',
+                                icon: Icon(Icons.schedule_outlined),
+                                label: Text('Credit'),
+                              ),
+                            ],
+                            selected: {paymentMethod},
+                            onSelectionChanged: (value) {
+                              setState(() {
+                                paymentMethod = value.first;
+                                if (paymentMethod == 'Credit') {
+                                  amountPaid.clear();
+                                }
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: amountPaid,
+                            enabled: paymentMethod != 'Credit',
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              prefixIcon: const Icon(Icons.payments_outlined),
+                              labelText: paymentMethod == 'Cash'
+                                  ? 'Cash received from customer'
+                                  : 'Amount paid by customer',
+                              hintText: total > 0
+                                  ? total.toStringAsFixed(0)
+                                  : '0',
+                              border: const OutlineInputBorder(),
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
+                          const SizedBox(height: 8),
+                          TotalRow(
+                            label: 'Paid amount',
+                            value: money.format(tendered),
+                          ),
+                          TotalRow(
+                            label: paymentMethod == 'Credit'
+                                ? 'Balance due'
+                                : 'Return change',
+                            value: money.format(
+                              paymentMethod == 'Credit'
+                                  ? balanceDue
+                                  : changeDue,
+                            ),
+                            strong: changeDue > 0 || balanceDue > 0,
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed: cart.isEmpty
+                                ? null
+                                : () => _postInvoice(store, total, tendered),
+                            icon: const Icon(Icons.receipt_long_outlined),
+                            label: const Text('Post invoice (F8)'),
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: cart.isEmpty
+                                ? null
+                                : () => _postInvoice(
+                                    store,
+                                    total,
+                                    tendered,
+                                    printAfterPost: true,
+                                  ),
+                            icon: const Icon(Icons.print_outlined),
+                            label: const Text('Post & print (F9)'),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton.icon(
+                            onPressed: () =>
+                                _openReceiptPrinterDialog(context, store),
+                            icon: const Icon(Icons.settings_outlined),
+                            label: Text(
+                              store.receiptPrinterName.isEmpty
+                                  ? 'Printer: Windows default'
+                                  : 'Printer: ${store.receiptPrinterName}',
+                            ),
+                          ),
+                        ],
+                        if (!restaurantMenuMode) ...[
+                          const SizedBox(height: 12),
+                          const Divider(height: 1),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Recent invoices',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 6),
+                          for (final invoice in store.invoices.take(5))
+                            ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.receipt_long_outlined),
+                              title: Text(invoice.number),
+                              subtitle: Text(
+                                '${invoice.customer}  |  ${money.format(invoice.total)}',
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Open PDF',
+                                    onPressed: () => unawaited(
+                                      _openInvoicePdf(store, invoice),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.picture_as_pdf_outlined,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Duplicate reprint',
+                                    onPressed: () => unawaited(
+                                      _reprintInvoice(store, invoice),
+                                    ),
+                                    icon: const Icon(Icons.print_outlined),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ];
             if (restaurantMenuMode) {
               return SizedBox(
                 height: panelHeight,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [panels[0], const SizedBox(width: 16), panels[1]],
+                  children: [
+                    panels[0],
+                    const SizedBox(width: 16),
+                    panels[1],
+                  ],
                 ),
               );
             }
-            return Wrap(spacing: 16, runSpacing: 16, children: panels);
+            return Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: panels,
+            );
           },
         ),
       ),
@@ -3705,6 +3696,7 @@ class _PosViewState extends State<PosView> {
       _showMessage(context, 'Invoice PDF failed: ${_shortError(error)}');
     }
   }
+
 }
 
 Future<void> _openReceiptPrinterDialog(
@@ -4005,9 +3997,7 @@ class _RestaurantPaymentControls extends StatelessWidget {
           decoration: InputDecoration(
             isDense: true,
             prefixIcon: const Icon(Icons.payments_outlined),
-            labelText: paymentMethod == 'Cash'
-                ? 'Cash received'
-                : 'Amount paid',
+            labelText: paymentMethod == 'Cash' ? 'Cash received' : 'Amount paid',
             hintText: total > 0 ? total.toStringAsFixed(0) : '0',
             border: const OutlineInputBorder(),
           ),
@@ -4070,9 +4060,9 @@ class _CompactAmountRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = strong
-        ? Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)
+        ? Theme.of(context).textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+          )
         : Theme.of(context).textTheme.bodyMedium;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -4081,12 +4071,7 @@ class _CompactAmountRow extends StatelessWidget {
           Expanded(
             child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
-          Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: style,
-          ),
+          Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
         ],
       ),
     );
@@ -4626,7 +4611,6 @@ class UsersView extends StatelessWidget {
           DataColumn(label: Text('Name')),
           DataColumn(label: Text('Email')),
           DataColumn(label: Text('Role')),
-          DataColumn(label: Text('Branch type')),
           DataColumn(label: Text('Status')),
           DataColumn(label: Text('Actions')),
         ],
@@ -4637,7 +4621,6 @@ class UsersView extends StatelessWidget {
                 DataCell(Text(user.name)),
                 DataCell(Text(user.email)),
                 DataCell(Text(user.role)),
-                DataCell(Text(user.branchType)),
                 DataCell(
                   StatusPill(label: user.active ? 'Active' : 'Disabled'),
                 ),
@@ -4798,7 +4781,10 @@ class AppPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 14),
-            if (fillBody) Expanded(child: _panelBody) else _panelBody,
+            if (fillBody)
+              Expanded(child: _panelBody)
+            else
+              _panelBody,
           ],
         ),
       ),
@@ -5771,7 +5757,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
   final email = TextEditingController(text: user?.email ?? '');
   final password = TextEditingController(text: user?.password ?? '');
   String role = user?.role ?? 'Cashier';
-  String branchType = user?.branchType ?? store.activeBranch.type;
   bool active = user?.active ?? true;
   await _showFormDialog(
     context,
@@ -5811,20 +5796,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
                 onChanged: (value) =>
                     setDialogState(() => role = value ?? role),
               ),
-              DropdownButtonFormField<String>(
-                initialValue: branchType.toLowerCase().contains('restaurant')
-                    ? 'Restaurant'
-                    : 'Retail',
-                decoration: const InputDecoration(labelText: 'Branch type'),
-                items: const ['Retail', 'Restaurant']
-                    .map(
-                      (item) =>
-                          DropdownMenuItem(value: item, child: Text(item)),
-                    )
-                    .toList(),
-                onChanged: (value) =>
-                    setDialogState(() => branchType = value ?? branchType),
-              ),
               SwitchListTile(
                 value: active,
                 onChanged: (value) => setDialogState(() => active = value),
@@ -5843,8 +5814,6 @@ Future<void> _openUserDialog(BuildContext context, {AppUser? user}) async {
         role: role,
         active: active,
         password: password.text.trim(),
-        branchId: user?.branchId ?? store.activeBranch.id,
-        branchType: branchType,
       ),
     ),
   );
