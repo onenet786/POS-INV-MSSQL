@@ -138,7 +138,7 @@ class ApiClient {
     this.baseUrl = const String.fromEnvironment(
       'API_BASE_URL',
       defaultValue: 'http://pos.flaura.pk:4100/api',
-      // defaultValue: 'http://192.168.85.235:4100/api',
+      defaultValue: 'http://192.168.85.235:4100/api',
     ),
   });
 
